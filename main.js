@@ -156,6 +156,217 @@ var StreamPlayer = class {
   }
 };
 
+// src/port/frontend.mjs
+var SYMBOLS = `_;:,.!?\xA1\xBF\u2014\u2026"\xAB\xBB\u201C\u201D ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\u0251\u0250\u0252\xE6\u0253\u0299\u03B2\u0254\u0255\xE7\u0257\u0256\xF0\u02A4\u0259\u0258\u025A\u025B\u025C\u025D\u025E\u025F\u0284\u0261\u0260\u0262\u029B\u0266\u0267\u0127\u0265\u029C\u0268\u026A\u029D\u026D\u026C\u026B\u026E\u029F\u0271\u026F\u0270\u014B\u0273\u0272\u0274\xF8\u0275\u0278\u03B8\u0153\u0276\u0298\u0279\u027A\u027E\u027B\u0280\u0281\u027D\u0282\u0283\u0288\u02A7\u0289\u028A\u028B\u2C71\u028C\u0263\u0264\u028D\u03C7\u028E\u028F\u0291\u0290\u0292\u0294\u02A1\u0295\u02A2\u01C0\u01C1\u01C2\u01C3\u02C8\u02CC\u02D0\u02D1\u02BC\u02B4\u02B0\u02B1\u02B2\u02B7\u02E0\u02E4\u02DE\u2193\u2191\u2192\u2197\u2198'\u0329'\u1D7B`;
+var SYMBOL_TO_ID = new Map(
+  [...SYMBOLS].map((symbol, index) => [symbol, index])
+);
+function stripMarkdown(input, rules) {
+  let text = input;
+  if (rules.links)
+    text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/<https?:\/\/[^>]+>/g, "");
+  if (rules.code)
+    text = text.replace(/^\s*```[^\n]*\n?/gm, "").replace(/^\s*```\s*$/gm, "").replace(/`([^`]*)`/g, "$1");
+  if (rules.headings)
+    text = text.replace(/^\s{0,3}#{1,6}\s+(.+?)(?:\s+#+)?\s*$/gm, "$1");
+  if (rules.listsAndQuotes)
+    text = text.replace(/^\s{0,3}>\s?/gm, "").replace(/^\s{0,3}(?:[-+*]|\d+[.)])\s+/gm, "").replace(/^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/gm, "").replace(/\|/g, " ");
+  if (rules.emphasis)
+    text = text.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/__([^_]+)__/g, "$1").replace(/(?<!\w)\*([^*]+)\*(?!\w)/g, "$1").replace(/(?<!\w)_([^_]+)_(?!\w)/g, "$1");
+  if (rules.strikethroughAndRules)
+    text = text.replace(/~~([^~]+)~~/g, "$1").replace(/^\s{0,3}(?:[-*_]\s*){3,}$/gm, "");
+  return text.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g, "$1");
+}
+function splitText(text, limit = 280) {
+  const normalized = text.trim().replace(/\s+/g, " ");
+  const sentences = normalized.split(/(?<=[.!?;:])\s+/).filter(Boolean);
+  const chunks = [];
+  for (let sentence of sentences.length ? sentences : [normalized]) {
+    while (sentence.length > limit) {
+      const search = sentence.slice(0, limit + 1);
+      const punctuation = Math.max(
+        ...[",", ";", ":"].map((mark) => search.lastIndexOf(mark))
+      );
+      let splitAt = punctuation >= Math.floor(limit / 2) ? punctuation + 1 : sentence.lastIndexOf(" ", limit);
+      if (splitAt < Math.floor(limit / 2))
+        splitAt = limit;
+      chunks.push(sentence.slice(0, splitAt).trim());
+      sentence = sentence.slice(splitAt).trim();
+    }
+    if (sentence)
+      chunks.push(sentence);
+  }
+  return chunks;
+}
+
+// src/webSpeechPlayer.ts
+var WebSpeechPlayer = class {
+  constructor() {
+    this.activeUtterances = /* @__PURE__ */ new Set();
+    this.currentAbort = null;
+    this.onStateChange = () => void 0;
+    this.onChunkStart = () => void 0;
+    this.active = false;
+  }
+  get isPlaying() {
+    return this.active;
+  }
+  setOnStateChange(callback) {
+    this.onStateChange = callback;
+  }
+  setOnChunkStart(callback) {
+    this.onChunkStart = callback;
+  }
+  static isSupported() {
+    return typeof window !== "undefined" && "speechSynthesis" in window;
+  }
+  static getAvailableVoices() {
+    if (!this.isSupported())
+      return Promise.resolve([]);
+    const mapVoices = (voices2) => voices2.map((v) => ({
+      name: v.name,
+      lang: v.lang,
+      voiceURI: v.voiceURI,
+      isDefault: v.default
+    }));
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      return Promise.resolve(mapVoices(voices));
+    }
+    return new Promise((resolve) => {
+      let resolved = false;
+      const handler = () => {
+        if (resolved)
+          return;
+        resolved = true;
+        window.speechSynthesis.removeEventListener("voiceschanged", handler);
+        resolve(mapVoices(window.speechSynthesis.getVoices()));
+      };
+      window.speechSynthesis.addEventListener("voiceschanged", handler);
+      window.setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          window.speechSynthesis.removeEventListener("voiceschanged", handler);
+          resolve(mapVoices(window.speechSynthesis.getVoices()));
+        }
+      }, 500);
+    });
+  }
+  findVoice(voiceURI) {
+    if (!WebSpeechPlayer.isSupported())
+      return null;
+    const voices = window.speechSynthesis.getVoices();
+    if (voiceURI) {
+      const matched = voices.find((v) => v.voiceURI === voiceURI || v.name === voiceURI);
+      if (matched)
+        return matched;
+    }
+    return voices.find((v) => v.default) ?? voices[0] ?? null;
+  }
+  async speak(rawText, settings, signal) {
+    if (!WebSpeechPlayer.isSupported()) {
+      throw new Error("Web Speech API is not supported in this environment.");
+    }
+    this.stop();
+    const abort = new AbortController();
+    this.currentAbort = abort;
+    signal?.addEventListener("abort", () => this.stop());
+    const defaultRules = {
+      headings: true,
+      emphasis: true,
+      links: true,
+      listsAndQuotes: true,
+      code: true,
+      strikethroughAndRules: true
+    };
+    const rules = settings.markdownNormalization === "custom" ? { ...defaultRules, ...settings.markdownRules } : defaultRules;
+    const stripMarkdownFn = stripMarkdown;
+    const splitTextFn = splitText;
+    const preparedText = settings.markdownNormalization === "none" ? rawText : stripMarkdownFn(rawText, rules);
+    const rawChunks = splitTextFn(preparedText);
+    const chunks = rawChunks.filter((c) => c.trim().length > 0);
+    if (chunks.length === 0)
+      return;
+    this.active = true;
+    this.onStateChange();
+    const targetVoice = this.findVoice(settings.systemVoiceURI);
+    try {
+      for (let i = 0; i < chunks.length; i++) {
+        if (abort.signal.aborted || signal?.aborted)
+          break;
+        const chunk = chunks[i];
+        await this.speakChunk(chunk, targetVoice, settings.speed, settings.systemPitch, abort.signal);
+      }
+    } finally {
+      if (this.currentAbort === abort) {
+        this.currentAbort = null;
+      }
+      this.active = false;
+      this.onStateChange();
+    }
+  }
+  speakChunk(chunk, voice, rate, pitch, abortSignal) {
+    return new Promise((resolve, reject) => {
+      if (abortSignal.aborted) {
+        resolve();
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(chunk);
+      if (voice)
+        utterance.voice = voice;
+      utterance.rate = Math.min(2, Math.max(0.5, rate));
+      utterance.pitch = Math.min(1.5, Math.max(0.5, pitch));
+      this.activeUtterances.add(utterance);
+      let cleanup = () => {
+        this.activeUtterances.delete(utterance);
+        abortSignal.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        window.speechSynthesis.cancel();
+        resolve();
+      };
+      utterance.onstart = () => {
+        if (abortSignal.aborted) {
+          window.speechSynthesis.cancel();
+          cleanup();
+          resolve();
+          return;
+        }
+        this.onChunkStart(chunk);
+      };
+      utterance.onend = () => {
+        cleanup();
+        resolve();
+      };
+      utterance.onerror = (event) => {
+        cleanup();
+        if (event.error === "canceled" || event.error === "interrupted") {
+          resolve();
+        } else {
+          reject(new Error(`Speech synthesis failed: ${event.error}`));
+        }
+      };
+      abortSignal.addEventListener("abort", onAbort);
+      window.speechSynthesis.speak(utterance);
+    });
+  }
+  stop() {
+    if (this.currentAbort) {
+      this.currentAbort.abort();
+      this.currentAbort = null;
+    }
+    if (WebSpeechPlayer.isSupported()) {
+      window.speechSynthesis.cancel();
+    }
+    this.activeUtterances.clear();
+    if (this.active) {
+      this.active = false;
+      this.onStateChange();
+    }
+  }
+};
+
 // src/port/runtime.mjs
 var SAMPLE_RATE = 24e3;
 function boundaryPauseSeconds(chunk) {
@@ -390,6 +601,9 @@ var DEFAULT_MARKDOWN_RULES = {
   strikethroughAndRules: true
 };
 var DEFAULT_SETTINGS = {
+  ttsEngine: "system",
+  systemVoiceURI: "",
+  systemPitch: 1,
   highlightSpokenText: true,
   speed: 1,
   variation: 0.667,
@@ -398,6 +612,14 @@ var DEFAULT_SETTINGS = {
   markdownRules: { ...DEFAULT_MARKDOWN_RULES }
 };
 function normalizeSpeechSettings(settings) {
+  if (!["system", "inflect"].includes(settings.ttsEngine))
+    settings.ttsEngine = DEFAULT_SETTINGS.ttsEngine;
+  if (typeof settings.systemVoiceURI !== "string")
+    settings.systemVoiceURI = DEFAULT_SETTINGS.systemVoiceURI;
+  if (typeof settings.systemPitch !== "number" || Number.isNaN(settings.systemPitch))
+    settings.systemPitch = DEFAULT_SETTINGS.systemPitch;
+  else
+    settings.systemPitch = Math.min(1.5, Math.max(0.5, settings.systemPitch));
   settings.speed = Math.min(2, Math.max(0.5, settings.speed));
   settings.variation = Math.min(1, Math.max(0, settings.variation));
   settings.seed = Number.isSafeInteger(settings.seed) ? settings.seed : DEFAULT_SETTINGS.seed;
@@ -446,12 +668,89 @@ function createMarkdownRules(container, voiceover) {
 var LocalVoiceoverSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
+    this.cachedVoices = [];
     this.voiceover = plugin;
   }
   display() {
     const { containerEl } = this;
     containerEl.empty();
+    addSection(containerEl, "Engine");
+    const engineSetting = new import_obsidian3.Setting(containerEl).setName("Voice engine");
+    addInfo(engineSetting, "Choose between native operating system voices (zero download) or local ONNX synthesis.");
+    engineSetting.addDropdown((dropdown) => dropdown.addOptions({
+      system: "System (Native OS Voices)",
+      inflect: "Inflect Micro v2 (Local ONNX)"
+    }).setValue(this.voiceover.settings.ttsEngine).onChange(async (value) => {
+      this.voiceover.settings.ttsEngine = value;
+      await this.voiceover.saveSettings();
+      this.display();
+    }));
     addSection(containerEl, "Voice");
+    if (this.voiceover.settings.ttsEngine === "system") {
+      const voiceSetting = new import_obsidian3.Setting(containerEl).setName("System voice");
+      addInfo(voiceSetting, "Choose from the voices installed on your operating system or Android device.");
+      const populateVoices = (voices) => {
+        voiceSetting.controlEl.empty();
+        voiceSetting.addDropdown((dropdown) => {
+          const options = {};
+          if (voices.length === 0) {
+            options[""] = "Default System Voice";
+          } else {
+            for (const voice of voices) {
+              options[voice.voiceURI] = `${voice.name} (${voice.lang})`;
+            }
+          }
+          dropdown.addOptions(options);
+          const currentURI = this.voiceover.settings.systemVoiceURI;
+          const isValid = voices.some((v) => v.voiceURI === currentURI);
+          const valueToSet = isValid ? currentURI : voices[0]?.voiceURI ?? "";
+          dropdown.setValue(valueToSet).onChange(async (selected) => {
+            this.voiceover.settings.systemVoiceURI = selected;
+            await this.voiceover.saveSettings();
+          });
+        });
+      };
+      if (this.cachedVoices.length > 0) {
+        populateVoices(this.cachedVoices);
+      } else {
+        voiceSetting.addDropdown((dropdown) => {
+          dropdown.addOption("", "Loading system voices\u2026").setDisabled(true);
+        });
+        void WebSpeechPlayer.getAvailableVoices().then((voices) => {
+          this.cachedVoices = voices;
+          populateVoices(voices);
+        }).catch((err) => {
+          console.error("Failed to get system voices", err);
+        });
+      }
+      const pitch = new import_obsidian3.Setting(containerEl).setName("Pitch");
+      addInfo(pitch, "Voice pitch. Choose a value from 0.5 to 1.5 (default: 1.0).");
+      pitch.addSlider((slider) => {
+        const input = slider.sliderEl.parentElement.createEl("input", {
+          cls: "local-voiceover-slider-value",
+          type: "number",
+          value: this.voiceover.settings.systemPitch.toFixed(2)
+        });
+        input.min = "0.5";
+        input.max = "1.5";
+        input.step = "0.05";
+        input.addEventListener("change", () => void (async () => {
+          const value = Number(input.value);
+          if (!Number.isFinite(value))
+            return;
+          this.voiceover.settings.systemPitch = value;
+          normalizeSpeechSettings(this.voiceover.settings);
+          input.value = this.voiceover.settings.systemPitch.toFixed(2);
+          slider.setValue(this.voiceover.settings.systemPitch);
+          await this.voiceover.saveSettings();
+        })());
+        return slider.setLimits(0.5, 1.5, 0.05).setValue(this.voiceover.settings.systemPitch).onChange(async (value) => {
+          input.value = value.toFixed(2);
+          this.voiceover.settings.systemPitch = value;
+          await this.voiceover.saveSettings();
+        });
+      });
+    }
     const speed = new import_obsidian3.Setting(containerEl).setName("Speed");
     addInfo(speed, "Speech speed. Lower is slower. Choose a value from 0.5 to 2.0.");
     speed.addSlider((slider) => {
@@ -479,33 +778,45 @@ var LocalVoiceoverSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.voiceover.saveSettings();
       });
     });
-    const variation = new import_obsidian3.Setting(containerEl).setName("Variation");
-    addInfo(variation, "Voice variation. Lower is steadier. Choose a value from 0 to 1.");
-    variation.addSlider((slider) => {
-      const input = slider.sliderEl.parentElement.createEl("input", {
-        cls: "local-voiceover-slider-value",
-        type: "number",
-        value: this.voiceover.settings.variation.toFixed(2)
+    if (this.voiceover.settings.ttsEngine === "inflect") {
+      const variation = new import_obsidian3.Setting(containerEl).setName("Variation");
+      addInfo(variation, "Voice variation. Lower is steadier. Choose a value from 0 to 1.");
+      variation.addSlider((slider) => {
+        const input = slider.sliderEl.parentElement.createEl("input", {
+          cls: "local-voiceover-slider-value",
+          type: "number",
+          value: this.voiceover.settings.variation.toFixed(2)
+        });
+        input.min = "0";
+        input.max = "1";
+        input.step = "0.01";
+        input.addEventListener("change", () => void (async () => {
+          const value = Number(input.value);
+          if (!Number.isFinite(value))
+            return;
+          this.voiceover.settings.variation = value;
+          normalizeSpeechSettings(this.voiceover.settings);
+          input.value = this.voiceover.settings.variation.toFixed(2);
+          slider.setValue(this.voiceover.settings.variation);
+          await this.voiceover.saveSettings();
+        })());
+        return slider.setLimits(0, 1, 0.01).setValue(this.voiceover.settings.variation).onChange(async (value) => {
+          input.value = value.toFixed(2);
+          this.voiceover.settings.variation = value;
+          await this.voiceover.saveSettings();
+        });
       });
-      input.min = "0";
-      input.max = "1";
-      input.step = "0.01";
-      input.addEventListener("change", () => void (async () => {
-        const value = Number(input.value);
-        if (!Number.isFinite(value))
+      const seed = new import_obsidian3.Setting(containerEl).setName("Seed");
+      addInfo(seed, "A safe integer. The same seed repeats the same sample on this runtime.");
+      seed.addText((text) => text.setValue(String(this.voiceover.settings.seed)).onChange(async (value) => {
+        const parsed = Number(value);
+        if (!Number.isSafeInteger(parsed))
           return;
-        this.voiceover.settings.variation = value;
+        this.voiceover.settings.seed = parsed;
         normalizeSpeechSettings(this.voiceover.settings);
-        input.value = this.voiceover.settings.variation.toFixed(2);
-        slider.setValue(this.voiceover.settings.variation);
         await this.voiceover.saveSettings();
-      })());
-      return slider.setLimits(0, 1, 0.01).setValue(this.voiceover.settings.variation).onChange(async (value) => {
-        input.value = value.toFixed(2);
-        this.voiceover.settings.variation = value;
-        await this.voiceover.saveSettings();
-      });
-    });
+      }));
+    }
     addSection(containerEl, "Markdown");
     const markdown = new import_obsidian3.Setting(containerEl).setName("Markdown normalization");
     addInfo(markdown, "Choose how selected Markdown is prepared before speech.");
@@ -517,16 +828,6 @@ var LocalVoiceoverSettingTab = class extends import_obsidian3.PluginSettingTab {
       await this.voiceover.saveSettings();
     }));
     updateMarkdownRules();
-    const seed = new import_obsidian3.Setting(containerEl).setName("Seed");
-    addInfo(seed, "A safe integer. The same seed repeats the same sample on this runtime.");
-    seed.addText((text) => text.setValue(String(this.voiceover.settings.seed)).onChange(async (value) => {
-      const parsed = Number(value);
-      if (!Number.isSafeInteger(parsed))
-        return;
-      this.voiceover.settings.seed = parsed;
-      normalizeSpeechSettings(this.voiceover.settings);
-      await this.voiceover.saveSettings();
-    }));
     addSection(containerEl, "Playback");
     const highlight = new import_obsidian3.Setting(containerEl).setName("Highlight spoken text");
     addInfo(highlight, "Highlight the currently playing text chunk in the editor.");
@@ -615,6 +916,7 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
     this.player = new StreamPlayer();
+    this.webPlayer = new WebSpeechPlayer();
     this.abortController = null;
     this.worker = null;
     this.loading = null;
@@ -623,6 +925,12 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
   async onload() {
     await this.loadSettings();
     this.player.setOnStateChange(() => this.syncPlaybackState());
+    this.webPlayer.setOnStateChange(() => this.syncPlaybackState());
+    this.webPlayer.setOnChunkStart((source) => {
+      if (this.settings.highlightSpokenText) {
+        window.dispatchEvent(new CustomEvent("local-voiceover-highlight", { detail: { source } }));
+      }
+    });
     this.addSettingTab(new LocalVoiceoverSettingTab(this.app, this));
     this.registerEditorExtension([
       playbackHighlightExtension,
@@ -633,6 +941,21 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
         stop: () => this.stop()
       })
     ]);
+    this.addRibbonIcon("volume-2", "Local voiceover: Speak / stop", () => {
+      if (this.isBusy()) {
+        this.stop();
+      } else {
+        const activeEditor = this.app.workspace.activeEditor?.editor;
+        if (activeEditor) {
+          const text = activeEditor.getSelection().trim();
+          if (text) {
+            void this.speak(text);
+          } else {
+            new import_obsidian4.Notice("Local voiceover: Select some text first to speak.");
+          }
+        }
+      }
+    });
     this.addCommand({
       id: "speak-selected-text",
       name: "Speak selected text",
@@ -681,6 +1004,23 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
     this.clearHighlight();
     this.unlockPlaybackRange();
     window.dispatchEvent(new Event("local-voiceover-playback-start"));
+    if (this.settings.ttsEngine === "system") {
+      this.setState("speaking");
+      try {
+        await this.webPlayer.speak(text, this.settings, abort.signal);
+      } catch (error) {
+        if (!abort.signal.aborted) {
+          console.error("Local Voiceover system synthesis failed", error);
+          const message = error instanceof Error ? error.message : "Unknown synthesis error.";
+          new import_obsidian4.Notice(`Local Voiceover: ${message}`);
+        }
+      } finally {
+        if (this.abortController === abort)
+          this.abortController = null;
+        this.syncPlaybackState();
+      }
+      return;
+    }
     this.setState("loading");
     try {
       await this.player.start();
@@ -757,19 +1097,20 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
     return this.loading;
   }
   isBusy() {
-    return this.abortController !== null || this.player.isPlaying;
+    return this.abortController !== null || this.player.isPlaying || this.webPlayer.isPlaying;
   }
   stop() {
     this.abortController?.abort();
     this.abortController = null;
     this.player.stop();
+    this.webPlayer.stop();
     this.clearHighlight();
     this.unlockPlaybackRange();
     this.setState("idle");
     new import_obsidian4.Notice("Speech stopped.");
   }
   syncPlaybackState() {
-    if (!this.abortController && !this.player.isPlaying) {
+    if (!this.abortController && !this.player.isPlaying && !this.webPlayer.isPlaying) {
       this.clearHighlight();
       this.unlockPlaybackRange();
       this.setState("idle");
@@ -785,6 +1126,7 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
     this.abortController?.abort();
     this.abortController = null;
     this.player.stop();
+    this.webPlayer.stop();
     this.clearHighlight();
     this.unlockPlaybackRange();
     this.worker?.dispose();

@@ -9,7 +9,12 @@ export interface MarkdownNormalizationRules {
 	strikethroughAndRules: boolean;
 }
 
+export type TTSEngine = "system" | "inflect";
+
 export interface LocalVoiceoverSettings {
+	ttsEngine: TTSEngine;
+	systemVoiceURI: string;
+	systemPitch: number;
 	highlightSpokenText: boolean;
 	speed: number;
 	variation: number;
@@ -28,6 +33,9 @@ export const DEFAULT_MARKDOWN_RULES: MarkdownNormalizationRules = {
 };
 
 export const DEFAULT_SETTINGS: LocalVoiceoverSettings = {
+	ttsEngine: "system",
+	systemVoiceURI: "",
+	systemPitch: 1,
 	highlightSpokenText: true,
 	speed: 1,
 	variation: 0.667,
@@ -37,6 +45,14 @@ export const DEFAULT_SETTINGS: LocalVoiceoverSettings = {
 };
 
 export function normalizeSpeechSettings(settings: LocalVoiceoverSettings): void {
+	if (!(["system", "inflect"] as const).includes(settings.ttsEngine))
+		settings.ttsEngine = DEFAULT_SETTINGS.ttsEngine;
+	if (typeof settings.systemVoiceURI !== "string")
+		settings.systemVoiceURI = DEFAULT_SETTINGS.systemVoiceURI;
+	if (typeof settings.systemPitch !== "number" || Number.isNaN(settings.systemPitch))
+		settings.systemPitch = DEFAULT_SETTINGS.systemPitch;
+	else
+		settings.systemPitch = Math.min(1.5, Math.max(0.5, settings.systemPitch));
 	settings.speed = Math.min(2, Math.max(0.5, settings.speed));
 	settings.variation = Math.min(1, Math.max(0, settings.variation));
 	settings.seed = Number.isSafeInteger(settings.seed) ? settings.seed : DEFAULT_SETTINGS.seed;

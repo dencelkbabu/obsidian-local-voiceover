@@ -2,7 +2,7 @@ import tsparser from "@typescript-eslint/parser";
 import obsidianmd from "eslint-plugin-obsidianmd";
 
 export default [
-  { ignores: ["**/node_modules/**", "**/*.js", "**/*.mjs", "**/*.json", "main.js"] },
+  { ignores: ["**/node_modules/**", "**/*.js", "**/*.mjs", "**/*.json", "main.js", "src/generatedWorker.ts"] },
   ...obsidianmd.configs.recommended,
   {
     files: ["**/*.ts"],

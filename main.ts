@@ -1,6 +1,7 @@
 import { Editor, Notice, Plugin, normalizePath } from "obsidian";
 import { ModelCache } from "./src/modelCache";
 import { StreamPlayer } from "./src/player";
+import { WebSpeechPlayer } from "./src/webSpeechPlayer";
 import { boundaryPauseSeconds, edgeFade } from "./src/port/runtime.mjs";
 import { createSelectionToolbarExtension, playbackHighlightExtension, type VoiceoverState } from "./src/selectionToolbar";
 import { DEFAULT_SETTINGS, normalizeSpeechSettings, type LocalVoiceoverSettings } from "./src/settings";
@@ -11,6 +12,7 @@ import { SpeechWorkerClient } from "./src/workerClient";
 export default class LocalVoiceoverPlugin extends Plugin {
 	settings: LocalVoiceoverSettings = DEFAULT_SETTINGS;
 	private readonly player = new StreamPlayer();
+	private readonly webPlayer = new WebSpeechPlayer();
 	private abortController: AbortController | null = null;
 	private worker: SpeechWorkerClient | null = null;
 	private loading: Promise<SpeechWorkerClient> | null = null;
@@ -19,6 +21,13 @@ export default class LocalVoiceoverPlugin extends Plugin {
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.player.setOnStateChange(() => this.syncPlaybackState());
+		this.webPlayer.setOnStateChange(() => this.syncPlaybackState());
+		this.webPlayer.setOnChunkStart((source) => {
+			if (this.settings.highlightSpokenText) {
+				window.dispatchEvent(new CustomEvent("local-voiceover-highlight", { detail: { source } }));
+			}
+		});
+
 		this.addSettingTab(new LocalVoiceoverSettingTab(this.app, this));
 		this.registerEditorExtension([
 			playbackHighlightExtension,
@@ -29,11 +38,29 @@ export default class LocalVoiceoverPlugin extends Plugin {
 				stop: () => this.stop(),
 			}),
 		]);
+
+		this.addRibbonIcon("volume-2", "Local voiceover: Speak / stop", () => {
+			if (this.isBusy()) {
+				this.stop();
+			} else {
+				const activeEditor = this.app.workspace.activeEditor?.editor;
+				if (activeEditor) {
+					const text = activeEditor.getSelection().trim();
+					if (text) {
+						void this.speak(text);
+					} else {
+						new Notice("Local voiceover: Select some text first to speak.");
+					}
+				}
+			}
+		});
+
 		this.addCommand({
 			id: "speak-selected-text",
 			name: "Speak selected text",
 			editorCheckCallback: (checking, editor) => this.speakCommand(checking, editor),
 		});
+
 		this.addCommand({
 			id: "stop-speaking",
 			name: "Stop speaking",
@@ -43,6 +70,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 				return true;
 			},
 		});
+
 		this.register(() => this.disposeRuntime());
 	}
 
@@ -78,6 +106,25 @@ export default class LocalVoiceoverPlugin extends Plugin {
 		this.clearHighlight();
 		this.unlockPlaybackRange();
 		window.dispatchEvent(new Event("local-voiceover-playback-start"));
+
+		if (this.settings.ttsEngine === "system") {
+			this.setState("speaking");
+			try {
+				await this.webPlayer.speak(text, this.settings, abort.signal);
+			} catch (error) {
+				if (!abort.signal.aborted) {
+					console.error("Local Voiceover system synthesis failed", error);
+					const message = error instanceof Error ? error.message : "Unknown synthesis error.";
+					new Notice(`Local Voiceover: ${message}`);
+				}
+			} finally {
+				if (this.abortController === abort) this.abortController = null;
+				this.syncPlaybackState();
+			}
+			return;
+		}
+
+		// Inflect Micro v2 synthesis
 		this.setState("loading");
 		try {
 			await this.player.start();
@@ -152,13 +199,14 @@ export default class LocalVoiceoverPlugin extends Plugin {
 	}
 
 	private isBusy(): boolean {
-		return this.abortController !== null || this.player.isPlaying;
+		return this.abortController !== null || this.player.isPlaying || this.webPlayer.isPlaying;
 	}
 
 	private stop(): void {
 		this.abortController?.abort();
 		this.abortController = null;
 		this.player.stop();
+		this.webPlayer.stop();
 		this.clearHighlight();
 		this.unlockPlaybackRange();
 		this.setState("idle");
@@ -166,7 +214,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 	}
 
 	private syncPlaybackState(): void {
-		if (!this.abortController && !this.player.isPlaying) {
+		if (!this.abortController && !this.player.isPlaying && !this.webPlayer.isPlaying) {
 			this.clearHighlight();
 			this.unlockPlaybackRange();
 			this.setState("idle");
@@ -183,6 +231,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 		this.abortController?.abort();
 		this.abortController = null;
 		this.player.stop();
+		this.webPlayer.stop();
 		this.clearHighlight();
 		this.unlockPlaybackRange();
 		this.worker?.dispose();

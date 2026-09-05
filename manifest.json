@@ -6,5 +6,5 @@
 	"description": "Speak selected text with local Inflect Micro v2 synthesis.",
 	"author": "giacomolisita",
 	"authorUrl": "https://github.com/giacolees",
-	"isDesktopOnly": true
+	"isDesktopOnly": false
 }

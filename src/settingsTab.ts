@@ -1,5 +1,6 @@
 import { type App, type Plugin, PluginSettingTab, Setting, ToggleComponent } from "obsidian";
-import { normalizeSpeechSettings, type LocalVoiceoverSettings } from "./settings";
+import { normalizeSpeechSettings, type LocalVoiceoverSettings, type TTSEngine } from "./settings";
+import { WebSpeechPlayer, type VoiceInfo } from "./webSpeechPlayer";
 
 type SettingsPlugin = {
 	settings: LocalVoiceoverSettings;
@@ -47,6 +48,7 @@ function createMarkdownRules(container: HTMLElement, voiceover: SettingsPlugin):
 
 export class LocalVoiceoverSettingTab extends PluginSettingTab {
 	private readonly voiceover: SettingsPlugin;
+	private cachedVoices: VoiceInfo[] = [];
 
 	constructor(app: App, plugin: Plugin) {
 		super(app, plugin);
@@ -56,12 +58,102 @@ export class LocalVoiceoverSettingTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
+
+		addSection(containerEl, "Engine");
+		const engineSetting = new Setting(containerEl).setName("Voice engine");
+		addInfo(engineSetting, "Choose between native operating system voices (zero download) or local ONNX synthesis.");
+		engineSetting.addDropdown((dropdown) => dropdown
+			.addOptions({
+				system: "System (Native OS Voices)",
+				inflect: "Inflect Micro v2 (Local ONNX)",
+			})
+			.setValue(this.voiceover.settings.ttsEngine)
+			.onChange(async (value) => {
+				this.voiceover.settings.ttsEngine = value as TTSEngine;
+				await this.voiceover.saveSettings();
+				// eslint-disable-next-line @typescript-eslint/no-deprecated
+				this.display();
+			}));
+
 		addSection(containerEl, "Voice");
+
+		if (this.voiceover.settings.ttsEngine === "system") {
+			const voiceSetting = new Setting(containerEl).setName("System voice");
+			addInfo(voiceSetting, "Choose from the voices installed on your operating system or Android device.");
+
+			const populateVoices = (voices: VoiceInfo[]) => {
+				voiceSetting.controlEl.empty();
+				voiceSetting.addDropdown((dropdown) => {
+					const options: Record<string, string> = {};
+					if (voices.length === 0) {
+						options[""] = "Default System Voice";
+					} else {
+						for (const voice of voices) {
+							options[voice.voiceURI] = `${voice.name} (${voice.lang})`;
+						}
+					}
+					dropdown.addOptions(options);
+					const currentURI = this.voiceover.settings.systemVoiceURI;
+					const isValid = voices.some((v) => v.voiceURI === currentURI);
+					const valueToSet = isValid ? currentURI : (voices[0]?.voiceURI ?? "");
+					dropdown.setValue(valueToSet).onChange(async (selected) => {
+						this.voiceover.settings.systemVoiceURI = selected;
+						await this.voiceover.saveSettings();
+					});
+				});
+			};
+
+			if (this.cachedVoices.length > 0) {
+				populateVoices(this.cachedVoices);
+			} else {
+				voiceSetting.addDropdown((dropdown) => {
+					dropdown.addOption("", "Loading system voices…").setDisabled(true);
+				});
+				void WebSpeechPlayer.getAvailableVoices()
+					.then((voices) => {
+						this.cachedVoices = voices;
+						populateVoices(voices);
+					})
+					.catch((err: unknown) => {
+						console.error("Failed to get system voices", err);
+					});
+			}
+
+			const pitch = new Setting(containerEl).setName("Pitch");
+			addInfo(pitch, "Voice pitch. Choose a value from 0.5 to 1.5 (default: 1.0).");
+			pitch.addSlider((slider) => {
+				const input = (slider.sliderEl.parentElement as HTMLElement).createEl("input", {
+					cls: "local-voiceover-slider-value",
+					type: "number",
+					value: this.voiceover.settings.systemPitch.toFixed(2),
+				});
+				input.min = "0.5";
+				input.max = "1.5";
+				input.step = "0.05";
+				input.addEventListener("change", () => void (async () => {
+					const value = Number(input.value);
+					if (!Number.isFinite(value)) return;
+					this.voiceover.settings.systemPitch = value;
+					normalizeSpeechSettings(this.voiceover.settings);
+					input.value = this.voiceover.settings.systemPitch.toFixed(2);
+					slider.setValue(this.voiceover.settings.systemPitch);
+					await this.voiceover.saveSettings();
+				})());
+				return slider.setLimits(0.5, 1.5, 0.05).setValue(this.voiceover.settings.systemPitch).onChange(async (value) => {
+					input.value = value.toFixed(2);
+					this.voiceover.settings.systemPitch = value;
+					await this.voiceover.saveSettings();
+				});
+			});
+		}
+
 		const speed = new Setting(containerEl).setName("Speed");
 		addInfo(speed, "Speech speed. Lower is slower. Choose a value from 0.5 to 2.0.");
 		speed.addSlider((slider) => {
 			const input = (slider.sliderEl.parentElement as HTMLElement).createEl("input", {
-				cls: "local-voiceover-slider-value", type: "number", value: this.voiceover.settings.speed.toFixed(2),
+				cls: "local-voiceover-slider-value",
+				type: "number",
+				value: this.voiceover.settings.speed.toFixed(2),
 			});
 			input.min = "0.5";
 			input.max = "2";
@@ -82,30 +174,44 @@ export class LocalVoiceoverSettingTab extends PluginSettingTab {
 			});
 		});
 
-		const variation = new Setting(containerEl).setName("Variation");
-		addInfo(variation, "Voice variation. Lower is steadier. Choose a value from 0 to 1.");
-		variation.addSlider((slider) => {
-			const input = (slider.sliderEl.parentElement as HTMLElement).createEl("input", {
-				cls: "local-voiceover-slider-value", type: "number", value: this.voiceover.settings.variation.toFixed(2),
+		if (this.voiceover.settings.ttsEngine === "inflect") {
+			const variation = new Setting(containerEl).setName("Variation");
+			addInfo(variation, "Voice variation. Lower is steadier. Choose a value from 0 to 1.");
+			variation.addSlider((slider) => {
+				const input = (slider.sliderEl.parentElement as HTMLElement).createEl("input", {
+					cls: "local-voiceover-slider-value",
+					type: "number",
+					value: this.voiceover.settings.variation.toFixed(2),
+				});
+				input.min = "0";
+				input.max = "1";
+				input.step = "0.01";
+				input.addEventListener("change", () => void (async () => {
+					const value = Number(input.value);
+					if (!Number.isFinite(value)) return;
+					this.voiceover.settings.variation = value;
+					normalizeSpeechSettings(this.voiceover.settings);
+					input.value = this.voiceover.settings.variation.toFixed(2);
+					slider.setValue(this.voiceover.settings.variation);
+					await this.voiceover.saveSettings();
+				})());
+				return slider.setLimits(0, 1, 0.01).setValue(this.voiceover.settings.variation).onChange(async (value) => {
+					input.value = value.toFixed(2);
+					this.voiceover.settings.variation = value;
+					await this.voiceover.saveSettings();
+				});
 			});
-			input.min = "0";
-			input.max = "1";
-			input.step = "0.01";
-			input.addEventListener("change", () => void (async () => {
-				const value = Number(input.value);
-				if (!Number.isFinite(value)) return;
-				this.voiceover.settings.variation = value;
+
+			const seed = new Setting(containerEl).setName("Seed");
+			addInfo(seed, "A safe integer. The same seed repeats the same sample on this runtime.");
+			seed.addText((text) => text.setValue(String(this.voiceover.settings.seed)).onChange(async (value) => {
+				const parsed = Number(value);
+				if (!Number.isSafeInteger(parsed)) return;
+				this.voiceover.settings.seed = parsed;
 				normalizeSpeechSettings(this.voiceover.settings);
-				input.value = this.voiceover.settings.variation.toFixed(2);
-				slider.setValue(this.voiceover.settings.variation);
 				await this.voiceover.saveSettings();
-			})());
-			return slider.setLimits(0, 1, 0.01).setValue(this.voiceover.settings.variation).onChange(async (value) => {
-				input.value = value.toFixed(2);
-				this.voiceover.settings.variation = value;
-				await this.voiceover.saveSettings();
-			});
-		});
+			}));
+		}
 
 		addSection(containerEl, "Markdown");
 		const markdown = new Setting(containerEl).setName("Markdown normalization");
@@ -121,16 +227,6 @@ export class LocalVoiceoverSettingTab extends PluginSettingTab {
 				await this.voiceover.saveSettings();
 			}));
 		updateMarkdownRules();
-
-		const seed = new Setting(containerEl).setName("Seed");
-		addInfo(seed, "A safe integer. The same seed repeats the same sample on this runtime.");
-		seed.addText((text) => text.setValue(String(this.voiceover.settings.seed)).onChange(async (value) => {
-			const parsed = Number(value);
-			if (!Number.isSafeInteger(parsed)) return;
-			this.voiceover.settings.seed = parsed;
-			normalizeSpeechSettings(this.voiceover.settings);
-			await this.voiceover.saveSettings();
-		}));
 
 		addSection(containerEl, "Playback");
 		const highlight = new Setting(containerEl).setName("Highlight spoken text");
