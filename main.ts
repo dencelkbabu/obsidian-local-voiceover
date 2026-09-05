@@ -36,7 +36,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 			createSelectionToolbarExtension({
 				getState: () => this.state,
 				isHighlightEnabled: () => this.settings.highlightSpokenText,
-				speak: (text) => void this.speak(text),
+				speak: (text, from) => void this.speak(text, from),
 				pause: () => void this.pause(),
 				resume: () => void this.resume(),
 				stop: () => this.stop(),

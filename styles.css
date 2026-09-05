@@ -10,6 +10,14 @@
 	position: fixed;
 	transform: translateY(-100%);
 	z-index: var(--layer-popover);
+	transition: left 0.15s ease-out, top 0.15s ease-out;
+}
+
+.local-voiceover-selection-toolbar--docked {
+	background: var(--background-secondary);
+	border-color: var(--interactive-accent);
+	border-radius: var(--radius-m);
+	box-shadow: var(--shadow-l);
 }
 
 .local-voiceover-selection-toolbar__button { height: 28px; width: 28px; }

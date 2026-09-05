@@ -602,7 +602,7 @@ function createSelectionToolbarExtension(actions) {
           } else if (state === "paused") {
             actions.resume?.();
           } else if (state === "idle") {
-            actions.speak(this.selectedText);
+            actions.speak(this.selectedText, this.selectedFrom);
           }
         });
         this.stopButton.addEventListener("click", () => actions.stop());
@@ -630,18 +630,37 @@ function createSelectionToolbarExtension(actions) {
         this.toolbar.remove();
       }
       scheduleRender() {
+        const state = actions.getState();
+        const isBusy = state !== "idle";
         const selection = this.view.state.selection.main;
         this.selectedFrom = selection.from;
         this.selectedText = this.view.state.sliceDoc(selection.from, selection.to).trim();
-        if (!this.selectedText || !this.view.hasFocus) {
-          if (actions.getState() === "idle")
-            this.clearHighlight();
-          this.applyPosition(null, actions.getState());
+        if (!isBusy && (!this.selectedText || !this.view.hasFocus)) {
+          this.clearHighlight();
+          this.applyPosition(null, state);
           return;
         }
         this.view.requestMeasure({
-          read: () => this.view.coordsAtPos(selection.from),
-          write: (coords) => this.applyPosition(coords, actions.getState())
+          read: () => {
+            if (this.selectedText && this.view.hasFocus) {
+              const coords = this.view.coordsAtPos(selection.from);
+              if (coords) {
+                return { left: coords.left, top: Math.max(8, coords.top - 8), isDocked: false };
+              }
+            }
+            if (isBusy) {
+              const rect = this.view.dom.getBoundingClientRect();
+              if (rect.width === 0 || rect.height === 0)
+                return null;
+              const toolbarWidth = this.toolbar.offsetWidth || 155;
+              const toolbarHeight = this.toolbar.offsetHeight || 34;
+              const left = Math.max(rect.left + 16, rect.right - toolbarWidth - 24);
+              const top = Math.max(toolbarHeight + 8, rect.top + toolbarHeight + 12);
+              return { left, top, isDocked: true };
+            }
+            return null;
+          },
+          write: (pos) => this.applyPosition(pos, state)
         });
       }
       applyChunkHighlight(event) {
@@ -681,11 +700,12 @@ function createSelectionToolbarExtension(actions) {
         }
         return { from, to };
       }
-      applyPosition(coords, state) {
-        if (!coords) {
+      applyPosition(pos, state) {
+        if (!pos) {
           this.toolbar.hide();
           return;
         }
+        this.toolbar.toggleClass("local-voiceover-selection-toolbar--docked", pos.isDocked);
         this.playButton.disabled = state === "loading" || state === "generating";
         this.stopButton.disabled = state === "idle";
         if (state === "speaking") {
@@ -701,8 +721,8 @@ function createSelectionToolbarExtension(actions) {
         this.status.setText(
           { idle: "Ready", loading: "Loading", generating: "Generating", speaking: "Speaking", paused: "Paused" }[state]
         );
-        this.toolbar.style.left = `${coords.left}px`;
-        this.toolbar.style.top = `${Math.max(8, coords.top - 8)}px`;
+        this.toolbar.style.left = `${pos.left}px`;
+        this.toolbar.style.top = `${pos.top}px`;
         this.toolbar.show();
       }
     }
@@ -1075,7 +1095,7 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
       createSelectionToolbarExtension({
         getState: () => this.state,
         isHighlightEnabled: () => this.settings.highlightSpokenText,
-        speak: (text) => void this.speak(text),
+        speak: (text, from) => void this.speak(text, from),
         pause: () => void this.pause(),
         resume: () => void this.resume(),
         stop: () => this.stop()
