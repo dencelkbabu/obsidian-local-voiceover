@@ -8,5 +8,6 @@ models/
 wasm/
 worker.js
 src/generatedWorker.ts
+src/generatedKokoroWorker.ts
 runtime-cache/
 data.json

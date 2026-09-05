@@ -4,10 +4,13 @@ import { StreamPlayer } from "./src/player";
 import { WebSpeechPlayer } from "./src/webSpeechPlayer";
 import { boundaryPauseSeconds, edgeFade } from "./src/port/runtime.mjs";
 import { createSelectionToolbarExtension, playbackHighlightExtension, type VoiceoverState } from "./src/selectionToolbar";
-import { DEFAULT_SETTINGS, normalizeSpeechSettings, type LocalVoiceoverSettings } from "./src/settings";
+import { DEFAULT_SETTINGS, DEFAULT_MARKDOWN_RULES, normalizeSpeechSettings, type LocalVoiceoverSettings, type TTSEngine } from "./src/settings";
 import { LocalVoiceoverSettingTab } from "./src/settingsTab";
 import workerSource from "./src/generatedWorker";
+import kokoroWorkerSource from "./src/generatedKokoroWorker";
 import { SpeechWorkerClient } from "./src/workerClient";
+import { KokoroWorkerClient } from "./src/kokoroWorkerClient";
+import { stripMarkdown } from "./src/port/frontend.mjs";
 
 export default class LocalVoiceoverPlugin extends Plugin {
 	settings: LocalVoiceoverSettings = DEFAULT_SETTINGS;
@@ -16,6 +19,8 @@ export default class LocalVoiceoverPlugin extends Plugin {
 	private abortController: AbortController | null = null;
 	private worker: SpeechWorkerClient | null = null;
 	private loading: Promise<SpeechWorkerClient> | null = null;
+	private kokoroWorker: KokoroWorkerClient | null = null;
+	private kokoroLoading: Promise<KokoroWorkerClient> | null = null;
 	private state: VoiceoverState = "idle";
 	private ribbonIconEl: HTMLElement | null = null;
 	private viewActionEls = new Set<HTMLElement>();
@@ -169,7 +174,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 		normalizeSpeechSettings(this.settings);
 	}
 
-	getActiveEngine(): "system" | "inflect" {
+	getActiveEngine(): TTSEngine {
 		if (this.settings.ttsEngine === "system" && !WebSpeechPlayer.isSupported()) {
 			return "inflect";
 		}
@@ -385,6 +390,83 @@ export default class LocalVoiceoverPlugin extends Plugin {
 			return;
 		}
 
+		if (this.getActiveEngine() === "kokoro") {
+			this.setState("loading");
+			try {
+				await this.player.start();
+				const worker = await this.getKokoroWorker();
+				if (abort.signal.aborted) return;
+				this.setState("generating");
+				// eslint-disable-next-line obsidianmd/ui/sentence-case
+				new Notice("Generating Kokoro speech…");
+
+				const rules =
+					this.settings.markdownNormalization === "custom"
+						? { ...DEFAULT_MARKDOWN_RULES, ...this.settings.markdownRules }
+						: DEFAULT_MARKDOWN_RULES;
+				const stripMarkdownFn = stripMarkdown as (input: string, rules: Record<string, boolean>) => string;
+				const normalizedText: string =
+					this.settings.markdownNormalization === "none"
+						? text
+						: stripMarkdownFn(text, rules as unknown as Record<string, boolean>);
+
+				const pendingChunks: Array<{ waveform: Float32Array; source: string }> = [];
+				const enqueueChunk = (chunk: { waveform: Float32Array; source: string }) => {
+					if (this.state !== "paused") {
+						this.setState("speaking");
+					}
+					this.player.queue(
+						edgeFade(chunk.waveform) as Float32Array,
+						Number(boundaryPauseSeconds(chunk.source)),
+						() => {
+							if (this.settings.highlightSpokenText || this.settings.autoScrollToSpokenText)
+								window.dispatchEvent(new CustomEvent("local-voiceover-highlight", { detail: { source: chunk.source } }));
+						},
+					);
+				};
+
+				await worker.synthesize(
+					normalizedText,
+					{
+						voice: this.settings.kokoroVoice,
+						speed: this.settings.speed,
+						dtype: this.settings.kokoroDtype,
+					},
+					(chunk) => {
+						if (abort.signal.aborted) return;
+						const durationSeconds = chunk.waveform.length / 24000;
+						if (!this.player.isPlaying && pendingChunks.length === 0 && durationSeconds < 1.0) {
+							pendingChunks.push(chunk);
+							return;
+						}
+						while (pendingChunks.length > 0) {
+							const buffered = pendingChunks.shift();
+							if (buffered) enqueueChunk(buffered);
+						}
+						enqueueChunk(chunk);
+					},
+					abort.signal,
+				);
+
+				if (!abort.signal.aborted) {
+					while (pendingChunks.length > 0) {
+						const buffered = pendingChunks.shift();
+						if (buffered) enqueueChunk(buffered);
+					}
+				}
+			} catch (error) {
+				if (!abort.signal.aborted) {
+					console.error("Local Voiceover Kokoro synthesis failed", error);
+					const message = error instanceof Error ? error.message : "Unknown synthesis error.";
+					new Notice(`Local Voiceover: ${message}`);
+				}
+			} finally {
+				if (this.abortController === abort) this.abortController = null;
+				this.syncPlaybackState();
+			}
+			return;
+		}
+
 		// Inflect Micro v2 synthesis
 		this.setState("loading");
 		try {
@@ -481,6 +563,42 @@ export default class LocalVoiceoverPlugin extends Plugin {
 		return this.loading;
 	}
 
+	private getKokoroWorker(): Promise<KokoroWorkerClient> {
+		if (this.kokoroWorker) return Promise.resolve(this.kokoroWorker);
+		if (this.kokoroLoading) return this.kokoroLoading;
+
+		// eslint-disable-next-line obsidianmd/ui/sentence-case
+		new Notice("Preparing Kokoro-82M neural voice model…");
+		const client = new KokoroWorkerClient(kokoroWorkerSource);
+		let lastNoticeTime = 0;
+		client.onProgress = (data: unknown) => {
+			const info = data as { status?: string; file?: string; progress?: number };
+			if (info && info.status === "progress" && typeof info.progress === "number") {
+				const now = Date.now();
+				if (now - lastNoticeTime > 2000) {
+					lastNoticeTime = now;
+					const pct = Math.round(info.progress);
+					new Notice(`Kokoro-82M downloading (${info.file ?? "model"}): ${pct}%`);
+				}
+			}
+		};
+
+		this.kokoroLoading = client
+			.initialize(this.settings.kokoroDtype)
+			.then(() => {
+				this.kokoroWorker = client;
+				// eslint-disable-next-line obsidianmd/ui/sentence-case
+				new Notice("Kokoro-82M neural model is ready.");
+				window.dispatchEvent(new Event("local-voiceover-state"));
+				return client;
+			})
+			.finally(() => {
+				this.kokoroLoading = null;
+			});
+
+		return this.kokoroLoading;
+	}
+
 	private isBusy(): boolean {
 		return this.abortController !== null || this.player.isPlaying || this.webPlayer.isPlaying || this.state === "paused";
 	}
@@ -528,5 +646,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 		this.unlockPlaybackRange();
 		this.worker?.dispose();
 		this.worker = null;
+		this.kokoroWorker?.dispose();
+		this.kokoroWorker = null;
 	}
 }

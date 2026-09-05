@@ -39,6 +39,26 @@ async function build() {
 	});
 	const source = worker.outputFiles[0].text;
 	fs.writeFileSync("src/generatedWorker.ts", `const workerSource = ${JSON.stringify(source)};\nexport default workerSource;\n`);
+
+	const kokoroWorker = await esbuild.build({
+		...shared,
+		entryPoints: ["src/kokoroWorker.ts"],
+		format: "iife",
+		alias: {
+			"fs/promises": "./src/empty.ts",
+			"path": "./src/empty.ts",
+		},
+		external: ["onnxruntime-node", "sharp", "node:*"],
+		banner: {
+			js: `if(typeof globalThis!=="undefined"){try{delete globalThis.process;}catch(e){}if(typeof globalThis.process!=="undefined"&&globalThis.process){try{Object.defineProperty(globalThis.process,"type",{value:"renderer",configurable:true,writable:true});}catch(e){}try{Object.defineProperty(globalThis.process,"versions",{value:undefined,configurable:true,writable:true});}catch(e){}}};`,
+		},
+		write: false,
+	});
+	const kokoroSource = kokoroWorker.outputFiles[0].text;
+	fs.writeFileSync(
+		"src/generatedKokoroWorker.ts",
+		`const kokoroWorkerSource = ${JSON.stringify(kokoroSource)};\nexport default kokoroWorkerSource;\n`,
+	);
 	await esbuild.build({
 		...shared,
 		entryPoints: ["main.ts"],

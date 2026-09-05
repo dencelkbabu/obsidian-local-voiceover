@@ -75,6 +75,7 @@ export class LocalVoiceoverSettingTab extends PluginSettingTab {
 		} else {
 			options.system = "System (Unavailable on mobile WebView)";
 		}
+		options.kokoro = "Kokoro-82M (Neural On-Device)";
 		options.inflect = "Inflect Micro v2 (Local ONNX)";
 
 		engineSetting.addDropdown((dropdown) => dropdown
@@ -97,6 +98,59 @@ export class LocalVoiceoverSettingTab extends PluginSettingTab {
 		}
 
 		addSection(containerEl, "Voice");
+
+		if (this.voiceover.settings.ttsEngine === "kokoro") {
+			const voiceSetting = new Setting(containerEl).setName("Kokoro voice");
+			addInfo(voiceSetting, "Choose an American or British voice from Kokoro-82M.");
+			const kokoroVoices: Record<string, string> = {
+				af_heart: "Heart (US Female - Default / Highest Quality) ❤️",
+				af_bella: "Bella (US Female) 🔥",
+				af_nicole: "Nicole (US Female - Whispery/Soft) 🎧",
+				af_sky: "Sky (US Female)",
+				af_sarah: "Sarah (US Female)",
+				af_alloy: "Alloy (US Female)",
+				af_kore: "Kore (US Female)",
+				af_aoede: "Aoede (US Female)",
+				af_jessica: "Jessica (US Female)",
+				af_river: "River (US Female)",
+				am_michael: "Michael (US Male)",
+				am_adam: "Adam (US Male)",
+				am_echo: "Echo (US Male)",
+				am_eric: "Eric (US Male)",
+				am_fenrir: "Fenrir (US Male)",
+				am_liam: "Liam (US Male)",
+				am_onyx: "Onyx (US Male)",
+				am_puck: "Puck (US Male)",
+				bf_emma: "Emma (UK Female) 🚺",
+				bf_isabella: "Isabella (UK Female)",
+				bf_alice: "Alice (UK Female)",
+				bf_lily: "Lily (UK Female)",
+				bm_george: "George (UK Male)",
+				bm_lewis: "Lewis (UK Male)",
+				bm_daniel: "Daniel (UK Male)",
+				bm_fable: "Fable (UK Male)",
+			};
+			voiceSetting.addDropdown((dropdown) => {
+				dropdown.addOptions(kokoroVoices);
+				dropdown.setValue(this.voiceover.settings.kokoroVoice).onChange(async (selected) => {
+					this.voiceover.settings.kokoroVoice = selected;
+					await this.voiceover.saveSettings();
+				});
+			});
+
+			const dtypeSetting = new Setting(containerEl).setName("Model precision");
+			addInfo(dtypeSetting, "q8 is quantized to ~86 MB for fast loading and great quality. fp32 is full precision (~330 MB).");
+			dtypeSetting.addDropdown((dropdown) => {
+				dropdown.addOptions({
+					q8: "q8 (Quantized ~86 MB - Recommended)",
+					fp32: "fp32 (Full Precision ~330 MB)",
+				});
+				dropdown.setValue(this.voiceover.settings.kokoroDtype).onChange(async (selected) => {
+					this.voiceover.settings.kokoroDtype = selected as "q8" | "fp32";
+					await this.voiceover.saveSettings();
+				});
+			});
+		}
 
 		if (this.voiceover.settings.ttsEngine === "system") {
 			const voiceSetting = new Setting(containerEl).setName("System voice");
