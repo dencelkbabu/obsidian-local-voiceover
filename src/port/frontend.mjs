@@ -154,7 +154,7 @@ export function stripMarkdown(input, rules) {
 		});
 	}
 	if (rules.listsAndQuotes)
-		text = text.replace(/^\s{0,3}>\s?/gm, "").replace(/^\s{0,3}(?:[-+*]|\d+[.)])\s+/gm, "").replace(/^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/gm, "").replace(/\|/g, " ");
+		text = text.replace(/^\s{0,3}>\s?/gm, "").replace(/^\s{0,3}[-+*]\s+/gm, "").replace(/^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/gm, "").replace(/\|/g, " ");
 	if (rules.emphasis)
 		text = text.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/__([^_]+)__/g, "$1").replace(/(?<!\w)\*([^*]+)\*(?!\w)/g, "$1").replace(/(?<!\w)_([^_]+)_(?!\w)/g, "$1");
 	if (rules.strikethroughAndRules)
