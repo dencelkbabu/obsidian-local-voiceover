@@ -129,11 +129,24 @@ const digitWords = (text) =>
 
 export function stripMarkdown(input, rules) {
 	let text = input;
+	text = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+	text = text.replace(/%%[\s\S]*?%%/g, "");
+	text = text.replace(/\s+\^[a-zA-Z0-9-]+\s*$/gm, "");
+	text = text.replace(/^\s{0,3}\[\^[^\]]+\]:\s*.+$/gm, "");
+	text = text.replace(/\[\^[^\]]+\]/g, "");
+	text = text.replace(/==([^=]+)==/g, "$1");
+	text = text.replace(/^\s{0,3}>\s*\[![^\]]+\][-+]?\s*/gm, "");
+	text = text.replace(/\[\[(?:[^|\]]*\|)?([^\]]+)\]\]/g, "$1");
 	if (rules.links)
 		text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/<https?:\/\/[^>]+>/g, "");
 	if (rules.code)
 		text = text.replace(/^\s*```[^\n]*\n?/gm, "").replace(/^\s*```\s*$/gm, "").replace(/`([^`]*)`/g, "$1");
-	if (rules.headings) text = text.replace(/^\s{0,3}#{1,6}\s+(.+?)(?:\s+#+)?\s*$/gm, "$1");
+	if (rules.headings) {
+		text = text.replace(/^\s{0,3}#{1,6}\s+(.+?)(?:\s+#+)?\s*$/gm, (_, heading) => {
+			const clean = heading.trim();
+			return /[.!?;:]$/.test(clean) ? `${clean}\n` : `${clean}.\n`;
+		});
+	}
 	if (rules.listsAndQuotes)
 		text = text.replace(/^\s{0,3}>\s?/gm, "").replace(/^\s{0,3}(?:[-+*]|\d+[.)])\s+/gm, "").replace(/^\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?$/gm, "").replace(/\|/g, " ");
 	if (rules.emphasis)
