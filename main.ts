@@ -1,4 +1,4 @@
-import { Editor, MarkdownView, Notice, Plugin, normalizePath } from "obsidian";
+import { Editor, MarkdownView, Notice, Plugin, normalizePath, setIcon } from "obsidian";
 import { ModelCache } from "./src/modelCache";
 import { StreamPlayer } from "./src/player";
 import { WebSpeechPlayer } from "./src/webSpeechPlayer";
@@ -17,6 +17,8 @@ export default class LocalVoiceoverPlugin extends Plugin {
 	private worker: SpeechWorkerClient | null = null;
 	private loading: Promise<SpeechWorkerClient> | null = null;
 	private state: VoiceoverState = "idle";
+	private ribbonIconEl: HTMLElement | null = null;
+	private viewActionEls = new Set<HTMLElement>();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -35,14 +37,16 @@ export default class LocalVoiceoverPlugin extends Plugin {
 				getState: () => this.state,
 				isHighlightEnabled: () => this.settings.highlightSpokenText,
 				speak: (text) => void this.speak(text),
+				pause: () => void this.pause(),
+				resume: () => void this.resume(),
 				stop: () => this.stop(),
 			}),
 		]);
 
 		this.registerViewActions();
 
-		this.addRibbonIcon("volume-2", "Local voiceover: Speak / stop", () => {
-			this.togglePlayback();
+		this.ribbonIconEl = this.addRibbonIcon("volume-2", "Local voiceover: Speak note or selection", () => {
+			void this.togglePlayback();
 		});
 
 		this.addCommand({
@@ -52,8 +56,40 @@ export default class LocalVoiceoverPlugin extends Plugin {
 				const context = this.getActiveNoteContext();
 				if (!context && !this.isBusy()) return false;
 				if (!checking) {
-					this.togglePlayback();
+					void this.togglePlayback();
 				}
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "toggle-play-pause",
+			name: "Toggle play / pause speech",
+			checkCallback: (checking) => {
+				if (!this.isBusy() && !this.getActiveNoteContext()) return false;
+				if (!checking) {
+					void this.togglePlayback();
+				}
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "pause-speaking",
+			name: "Pause speaking",
+			checkCallback: (checking) => {
+				if (this.state !== "speaking") return false;
+				if (!checking) void this.pause();
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "resume-speaking",
+			name: "Resume speaking",
+			checkCallback: (checking) => {
+				if (this.state !== "paused") return false;
+				if (!checking) void this.resume();
 				return true;
 			},
 		});
@@ -82,7 +118,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 			id: "stop-speaking",
 			name: "Stop speaking",
 			checkCallback: (checking) => {
-				if (!this.isBusy()) return false;
+				if (!this.isBusy() && this.state === "idle") return false;
 				if (!checking) this.stop();
 				return true;
 			},
@@ -165,8 +201,12 @@ export default class LocalVoiceoverPlugin extends Plugin {
 		return true;
 	}
 
-	private togglePlayback(): void {
-		if (this.isBusy()) {
+	private async togglePlayback(): Promise<void> {
+		if (this.state === "speaking") {
+			await this.pause();
+		} else if (this.state === "paused") {
+			await this.resume();
+		} else if (this.state === "loading" || this.state === "generating") {
 			this.stop();
 		} else {
 			const context = this.getActiveNoteContext();
@@ -181,13 +221,37 @@ export default class LocalVoiceoverPlugin extends Plugin {
 		}
 	}
 
+	async pause(): Promise<void> {
+		if (this.state !== "speaking") return;
+		if (this.getActiveEngine() === "system") {
+			this.webPlayer.pause();
+		} else {
+			await this.player.pause();
+		}
+		this.setState("paused");
+		new Notice("Speech paused.");
+	}
+
+	async resume(): Promise<void> {
+		if (this.state !== "paused") return;
+		if (this.getActiveEngine() === "system") {
+			this.webPlayer.resume();
+		} else {
+			await this.player.resume();
+		}
+		this.setState("speaking");
+		new Notice("Speech resumed.");
+	}
+
 	private registerViewActions(): void {
 		const addActionToView = (view: MarkdownView) => {
 			if (view.containerEl.querySelector(".local-voiceover-view-action")) return;
-			const actionEl = view.addAction("volume-2", "Local voiceover: Speak / stop", () => {
-				this.togglePlayback();
+			const actionEl = view.addAction("volume-2", "Local voiceover: Speak note or selection", () => {
+				void this.togglePlayback();
 			});
 			actionEl.addClass("local-voiceover-view-action");
+			this.viewActionEls.add(actionEl);
+			this.updateActionIcons();
 		};
 
 		this.registerEvent(
@@ -203,6 +267,39 @@ export default class LocalVoiceoverPlugin extends Plugin {
 				addActionToView(leaf.view);
 			}
 		});
+	}
+
+	private updateActionIcons(): void {
+		const getIconAndTitle = (state: VoiceoverState): { icon: string; title: string } => {
+			switch (state) {
+				case "speaking":
+					return { icon: "pause", title: "Local voiceover: Pause speaking" };
+				case "paused":
+					return { icon: "play", title: "Local voiceover: Resume speaking" };
+				case "loading":
+				case "generating":
+					return { icon: "loader", title: "Local voiceover: Stop speaking" };
+				case "idle":
+				default:
+					return { icon: "volume-2", title: "Local voiceover: Speak note or selection" };
+			}
+		};
+
+		const { icon, title } = getIconAndTitle(this.state);
+
+		if (this.ribbonIconEl) {
+			setIcon(this.ribbonIconEl, icon);
+			this.ribbonIconEl.setAttribute("aria-label", title);
+		}
+
+		for (const el of Array.from(this.viewActionEls)) {
+			if (!el.isConnected) {
+				this.viewActionEls.delete(el);
+			} else {
+				setIcon(el, icon);
+				el.setAttribute("aria-label", title);
+			}
+		}
 	}
 
 	private activeSpeakPromise: Promise<void> | null = null;
@@ -265,7 +362,9 @@ export default class LocalVoiceoverPlugin extends Plugin {
 			new Notice("Generating local speech…");
 			const pendingChunks: Array<{ waveform: Float32Array; source: string }> = [];
 			const enqueueChunk = (chunk: { waveform: Float32Array; source: string }) => {
-				this.setState("speaking");
+				if (this.state !== "paused") {
+					this.setState("speaking");
+				}
 				this.player.queue(
 					edgeFade(chunk.waveform) as Float32Array,
 					Number(boundaryPauseSeconds(chunk.source)),
@@ -350,7 +449,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 	}
 
 	private isBusy(): boolean {
-		return this.abortController !== null || this.player.isPlaying || this.webPlayer.isPlaying;
+		return this.abortController !== null || this.player.isPlaying || this.webPlayer.isPlaying || this.state === "paused";
 	}
 
 	private stop(): void {
@@ -365,6 +464,14 @@ export default class LocalVoiceoverPlugin extends Plugin {
 	}
 
 	private syncPlaybackState(): void {
+		if (this.state === "paused") {
+			if (!this.player.isPlaying && !this.webPlayer.isPlaying) {
+				this.clearHighlight();
+				this.unlockPlaybackRange();
+				this.setState("idle");
+			}
+			return;
+		}
 		if (!this.abortController && !this.player.isPlaying && !this.webPlayer.isPlaying) {
 			this.clearHighlight();
 			this.unlockPlaybackRange();
@@ -375,6 +482,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 	private setState(state: VoiceoverState): void {
 		if (this.state === state) return;
 		this.state = state;
+		this.updateActionIcons();
 		window.dispatchEvent(new Event("local-voiceover-state"));
 	}
 

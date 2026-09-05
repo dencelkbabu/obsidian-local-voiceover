@@ -19,6 +19,24 @@ export class WebSpeechPlayer {
 		return this.active;
 	}
 
+	get isPaused(): boolean {
+		return WebSpeechPlayer.isSupported() && window.speechSynthesis.paused;
+	}
+
+	pause(): void {
+		if (WebSpeechPlayer.isSupported() && this.active && !window.speechSynthesis.paused) {
+			window.speechSynthesis.pause();
+			this.onStateChange();
+		}
+	}
+
+	resume(): void {
+		if (WebSpeechPlayer.isSupported() && this.active && window.speechSynthesis.paused) {
+			window.speechSynthesis.resume();
+			this.onStateChange();
+		}
+	}
+
 	setOnStateChange(callback: () => void): void {
 		this.onStateChange = callback;
 	}

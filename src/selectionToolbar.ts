@@ -2,12 +2,14 @@ import { Decoration, EditorView, ViewPlugin, type ViewUpdate } from "@codemirror
 import { EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { setIcon } from "obsidian";
 
-export type VoiceoverState = "idle" | "loading" | "generating" | "speaking";
+export type VoiceoverState = "idle" | "loading" | "generating" | "speaking" | "paused";
 
 export interface SelectionToolbarActions {
 	getState(): VoiceoverState;
 	isHighlightEnabled(): boolean;
 	speak(text: string): void;
+	pause?(): void;
+	resume?(): void;
 	stop(): void;
 }
 
@@ -124,7 +126,16 @@ export function createSelectionToolbarExtension(actions: SelectionToolbarActions
 				setIcon(this.stopButton, "square");
 				this.status = this.toolbar.createSpan({ cls: "local-voiceover-selection-toolbar__status" });
 				for (const button of [this.playButton, this.stopButton]) button.addEventListener("mousedown", (event) => event.preventDefault());
-				this.playButton.addEventListener("click", () => actions.speak(this.selectedText));
+				this.playButton.addEventListener("click", () => {
+					const state = actions.getState();
+					if (state === "speaking") {
+						actions.pause?.();
+					} else if (state === "paused") {
+						actions.resume?.();
+					} else if (state === "idle") {
+						actions.speak(this.selectedText);
+					}
+				});
 				this.stopButton.addEventListener("click", () => actions.stop());
 				window.addEventListener("local-voiceover-state", this.refresh);
 				window.addEventListener("local-voiceover-highlight", this.highlightChunk);
@@ -205,9 +216,23 @@ export function createSelectionToolbarExtension(actions: SelectionToolbarActions
 					this.toolbar.hide();
 					return;
 				}
-				this.playButton.disabled = state !== "idle";
+				this.playButton.disabled = state === "loading" || state === "generating";
 				this.stopButton.disabled = state === "idle";
-				this.status.setText(({ idle: "Ready", loading: "Loading", generating: "Generating", speaking: "Speaking" })[state]);
+				if (state === "speaking") {
+					setIcon(this.playButton, "pause");
+					this.playButton.setAttribute("aria-label", "Pause speaking");
+				} else if (state === "paused") {
+					setIcon(this.playButton, "play");
+					this.playButton.setAttribute("aria-label", "Resume speaking");
+				} else {
+					setIcon(this.playButton, "play");
+					this.playButton.setAttribute("aria-label", "Speak selected text");
+				}
+				this.status.setText(
+					({ idle: "Ready", loading: "Loading", generating: "Generating", speaking: "Speaking", paused: "Paused" })[
+						state
+					],
+				);
 				this.toolbar.style.left = `${coords.left}px`;
 				this.toolbar.style.top = `${Math.max(8, coords.top - 8)}px`;
 				this.toolbar.show();

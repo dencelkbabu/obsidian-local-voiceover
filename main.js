@@ -103,7 +103,7 @@ var StreamPlayer = class {
     this.context = null;
     this.sources = /* @__PURE__ */ new Set();
     this.nextStart = 0;
-    this.startTimers = /* @__PURE__ */ new Set();
+    this.scheduledStarts = /* @__PURE__ */ new Set();
     this.onStateChange = () => void 0;
   }
   setOnStateChange(onStateChange) {
@@ -111,6 +111,9 @@ var StreamPlayer = class {
   }
   get isPlaying() {
     return this.sources.size > 0;
+  }
+  get isPaused() {
+    return this.context?.state === "suspended";
   }
   async start() {
     this.stop();
@@ -133,23 +136,58 @@ var StreamPlayer = class {
     const startAt = Math.max(this.nextStart, this.context.currentTime + 0.05);
     source.start(startAt);
     if (onStart) {
-      const timer = window.setTimeout(() => {
-        this.startTimers.delete(timer);
-        onStart();
-      }, Math.max(0, (startAt - this.context.currentTime) * 1e3));
-      this.startTimers.add(timer);
+      const item = {
+        startAt,
+        callback: onStart,
+        timer: null
+      };
+      if (this.context.state === "running") {
+        const delay = Math.max(0, (startAt - this.context.currentTime) * 1e3);
+        item.timer = window.setTimeout(() => {
+          this.scheduledStarts.delete(item);
+          item.callback();
+        }, delay);
+      }
+      this.scheduledStarts.add(item);
     }
     this.nextStart = startAt + buffer.duration + pauseSeconds;
     this.sources.add(source);
     this.onStateChange();
   }
+  async pause() {
+    if (this.context && this.context.state === "running") {
+      for (const item of this.scheduledStarts) {
+        if (item.timer !== null) {
+          window.clearTimeout(item.timer);
+          item.timer = null;
+        }
+      }
+      await this.context.suspend();
+      this.onStateChange();
+    }
+  }
+  async resume() {
+    if (this.context && this.context.state === "suspended") {
+      await this.context.resume();
+      for (const item of this.scheduledStarts) {
+        const delay = Math.max(0, (item.startAt - (this.context?.currentTime ?? 0)) * 1e3);
+        item.timer = window.setTimeout(() => {
+          this.scheduledStarts.delete(item);
+          item.callback();
+        }, delay);
+      }
+      this.onStateChange();
+    }
+  }
   stop() {
     for (const source of this.sources)
       source.stop();
     this.sources.clear();
-    for (const timer of this.startTimers)
-      window.clearTimeout(timer);
-    this.startTimers.clear();
+    for (const item of this.scheduledStarts) {
+      if (item.timer !== null)
+        window.clearTimeout(item.timer);
+    }
+    this.scheduledStarts.clear();
     void this.context?.close();
     this.context = null;
     this.onStateChange();
@@ -241,6 +279,21 @@ var WebSpeechPlayer = class {
   }
   get isPlaying() {
     return this.active;
+  }
+  get isPaused() {
+    return WebSpeechPlayer.isSupported() && window.speechSynthesis.paused;
+  }
+  pause() {
+    if (WebSpeechPlayer.isSupported() && this.active && !window.speechSynthesis.paused) {
+      window.speechSynthesis.pause();
+      this.onStateChange();
+    }
+  }
+  resume() {
+    if (WebSpeechPlayer.isSupported() && this.active && window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+      this.onStateChange();
+    }
   }
   setOnStateChange(callback) {
     this.onStateChange = callback;
@@ -542,7 +595,16 @@ function createSelectionToolbarExtension(actions) {
         this.status = this.toolbar.createSpan({ cls: "local-voiceover-selection-toolbar__status" });
         for (const button of [this.playButton, this.stopButton])
           button.addEventListener("mousedown", (event) => event.preventDefault());
-        this.playButton.addEventListener("click", () => actions.speak(this.selectedText));
+        this.playButton.addEventListener("click", () => {
+          const state = actions.getState();
+          if (state === "speaking") {
+            actions.pause?.();
+          } else if (state === "paused") {
+            actions.resume?.();
+          } else if (state === "idle") {
+            actions.speak(this.selectedText);
+          }
+        });
         this.stopButton.addEventListener("click", () => actions.stop());
         window.addEventListener("local-voiceover-state", this.refresh);
         window.addEventListener("local-voiceover-highlight", this.highlightChunk);
@@ -624,9 +686,21 @@ function createSelectionToolbarExtension(actions) {
           this.toolbar.hide();
           return;
         }
-        this.playButton.disabled = state !== "idle";
+        this.playButton.disabled = state === "loading" || state === "generating";
         this.stopButton.disabled = state === "idle";
-        this.status.setText({ idle: "Ready", loading: "Loading", generating: "Generating", speaking: "Speaking" }[state]);
+        if (state === "speaking") {
+          (0, import_obsidian2.setIcon)(this.playButton, "pause");
+          this.playButton.setAttribute("aria-label", "Pause speaking");
+        } else if (state === "paused") {
+          (0, import_obsidian2.setIcon)(this.playButton, "play");
+          this.playButton.setAttribute("aria-label", "Resume speaking");
+        } else {
+          (0, import_obsidian2.setIcon)(this.playButton, "play");
+          this.playButton.setAttribute("aria-label", "Speak selected text");
+        }
+        this.status.setText(
+          { idle: "Ready", loading: "Loading", generating: "Generating", speaking: "Speaking", paused: "Paused" }[state]
+        );
         this.toolbar.style.left = `${coords.left}px`;
         this.toolbar.style.top = `${Math.max(8, coords.top - 8)}px`;
         this.toolbar.show();
@@ -982,6 +1056,8 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
     this.worker = null;
     this.loading = null;
     this.state = "idle";
+    this.ribbonIconEl = null;
+    this.viewActionEls = /* @__PURE__ */ new Set();
     this.activeSpeakPromise = null;
   }
   async onload() {
@@ -1000,12 +1076,14 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
         getState: () => this.state,
         isHighlightEnabled: () => this.settings.highlightSpokenText,
         speak: (text) => void this.speak(text),
+        pause: () => void this.pause(),
+        resume: () => void this.resume(),
         stop: () => this.stop()
       })
     ]);
     this.registerViewActions();
-    this.addRibbonIcon("volume-2", "Local voiceover: Speak / stop", () => {
-      this.togglePlayback();
+    this.ribbonIconEl = this.addRibbonIcon("volume-2", "Local voiceover: Speak note or selection", () => {
+      void this.togglePlayback();
     });
     this.addCommand({
       id: "speak-note-or-selection",
@@ -1015,8 +1093,42 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
         if (!context && !this.isBusy())
           return false;
         if (!checking) {
-          this.togglePlayback();
+          void this.togglePlayback();
         }
+        return true;
+      }
+    });
+    this.addCommand({
+      id: "toggle-play-pause",
+      name: "Toggle play / pause speech",
+      checkCallback: (checking) => {
+        if (!this.isBusy() && !this.getActiveNoteContext())
+          return false;
+        if (!checking) {
+          void this.togglePlayback();
+        }
+        return true;
+      }
+    });
+    this.addCommand({
+      id: "pause-speaking",
+      name: "Pause speaking",
+      checkCallback: (checking) => {
+        if (this.state !== "speaking")
+          return false;
+        if (!checking)
+          void this.pause();
+        return true;
+      }
+    });
+    this.addCommand({
+      id: "resume-speaking",
+      name: "Resume speaking",
+      checkCallback: (checking) => {
+        if (this.state !== "paused")
+          return false;
+        if (!checking)
+          void this.resume();
         return true;
       }
     });
@@ -1043,7 +1155,7 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
       id: "stop-speaking",
       name: "Stop speaking",
       checkCallback: (checking) => {
-        if (!this.isBusy())
+        if (!this.isBusy() && this.state === "idle")
           return false;
         if (!checking)
           this.stop();
@@ -1114,8 +1226,12 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
     }
     return true;
   }
-  togglePlayback() {
-    if (this.isBusy()) {
+  async togglePlayback() {
+    if (this.state === "speaking") {
+      await this.pause();
+    } else if (this.state === "paused") {
+      await this.resume();
+    } else if (this.state === "loading" || this.state === "generating") {
       this.stop();
     } else {
       const context = this.getActiveNoteContext();
@@ -1129,14 +1245,38 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
       }
     }
   }
+  async pause() {
+    if (this.state !== "speaking")
+      return;
+    if (this.getActiveEngine() === "system") {
+      this.webPlayer.pause();
+    } else {
+      await this.player.pause();
+    }
+    this.setState("paused");
+    new import_obsidian4.Notice("Speech paused.");
+  }
+  async resume() {
+    if (this.state !== "paused")
+      return;
+    if (this.getActiveEngine() === "system") {
+      this.webPlayer.resume();
+    } else {
+      await this.player.resume();
+    }
+    this.setState("speaking");
+    new import_obsidian4.Notice("Speech resumed.");
+  }
   registerViewActions() {
     const addActionToView = (view) => {
       if (view.containerEl.querySelector(".local-voiceover-view-action"))
         return;
-      const actionEl = view.addAction("volume-2", "Local voiceover: Speak / stop", () => {
-        this.togglePlayback();
+      const actionEl = view.addAction("volume-2", "Local voiceover: Speak note or selection", () => {
+        void this.togglePlayback();
       });
       actionEl.addClass("local-voiceover-view-action");
+      this.viewActionEls.add(actionEl);
+      this.updateActionIcons();
     };
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
@@ -1150,6 +1290,35 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
         addActionToView(leaf.view);
       }
     });
+  }
+  updateActionIcons() {
+    const getIconAndTitle = (state) => {
+      switch (state) {
+        case "speaking":
+          return { icon: "pause", title: "Local voiceover: Pause speaking" };
+        case "paused":
+          return { icon: "play", title: "Local voiceover: Resume speaking" };
+        case "loading":
+        case "generating":
+          return { icon: "loader", title: "Local voiceover: Stop speaking" };
+        case "idle":
+        default:
+          return { icon: "volume-2", title: "Local voiceover: Speak note or selection" };
+      }
+    };
+    const { icon, title } = getIconAndTitle(this.state);
+    if (this.ribbonIconEl) {
+      (0, import_obsidian4.setIcon)(this.ribbonIconEl, icon);
+      this.ribbonIconEl.setAttribute("aria-label", title);
+    }
+    for (const el of Array.from(this.viewActionEls)) {
+      if (!el.isConnected) {
+        this.viewActionEls.delete(el);
+      } else {
+        (0, import_obsidian4.setIcon)(el, icon);
+        el.setAttribute("aria-label", title);
+      }
+    }
   }
   async speak(text, from = 0) {
     if (!text)
@@ -1206,7 +1375,9 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
       new import_obsidian4.Notice("Generating local speech\u2026");
       const pendingChunks = [];
       const enqueueChunk = (chunk) => {
-        this.setState("speaking");
+        if (this.state !== "paused") {
+          this.setState("speaking");
+        }
         this.player.queue(
           edgeFade(chunk.waveform),
           Number(boundaryPauseSeconds(chunk.source)),
@@ -1293,7 +1464,7 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
     return this.loading;
   }
   isBusy() {
-    return this.abortController !== null || this.player.isPlaying || this.webPlayer.isPlaying;
+    return this.abortController !== null || this.player.isPlaying || this.webPlayer.isPlaying || this.state === "paused";
   }
   stop() {
     this.abortController?.abort();
@@ -1306,6 +1477,14 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
     new import_obsidian4.Notice("Speech stopped.");
   }
   syncPlaybackState() {
+    if (this.state === "paused") {
+      if (!this.player.isPlaying && !this.webPlayer.isPlaying) {
+        this.clearHighlight();
+        this.unlockPlaybackRange();
+        this.setState("idle");
+      }
+      return;
+    }
     if (!this.abortController && !this.player.isPlaying && !this.webPlayer.isPlaying) {
       this.clearHighlight();
       this.unlockPlaybackRange();
@@ -1316,6 +1495,7 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
     if (this.state === state)
       return;
     this.state = state;
+    this.updateActionIcons();
     window.dispatchEvent(new Event("local-voiceover-state"));
   }
   disposeRuntime() {
