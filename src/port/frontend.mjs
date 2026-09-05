@@ -264,7 +264,8 @@ function restorePunctuation(ipa, normalized) {
 export function splitText(text, limit = 280) {
 	const lines = text.split(/\r?\n+/).map((line) => line.trim()).filter(Boolean);
 	const prefixRegex = /^(\s*(?:(?:part|chapter|section)\s+\d+|\d+)[.):])\s+(.+)$/i;
-	const sentenceRegex = /(?<=[!?]|(?<!\b(?:[A-Za-z]|Dr|Mr|Mrs|Ms|Prof|Sr|Jr|vs|etc|e\.g|i\.e)|\d)\.)\s+/i;
+	const sentenceRegex =
+		/(?<=[!?:])\s+|(?<=(?<!\b(?:[A-Za-z]|Dr|Mr|Mrs|Ms|Prof|Sr|Jr|vs|etc|e\.g|i\.e)|\d)\.)\s+/i;
 	const sentences = [];
 	for (const line of lines) {
 		let currentLine = line;

@@ -29,7 +29,7 @@ export function boundaryPauseSeconds(chunk) {
 	const trimmed = chunk.trim();
 	if (/^(?:part|chapter|section)?\s*\d+[.):]?$/i.test(trimmed)) return 0.55;
 	return (
-		{ "?": 0.28, "!": 0.24, ".": 0.22, ";": 0.16, ":": 0.13, ",": 0.09 }[
+		{ "?": 0.28, "!": 0.24, ".": 0.22, ";": 0.16, ":": 0.55, ",": 0.09 }[
 			trimmed.at(-1)
 		] ?? 0.08
 	);
