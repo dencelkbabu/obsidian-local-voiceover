@@ -492,13 +492,20 @@ function createSelectionToolbarExtension(actions) {
         this.lockGeneration = 0;
         this.refresh = () => this.scheduleRender();
         this.highlightChunk = (event) => this.applyChunkHighlight(event);
-        this.startPlayback = () => {
+        this.startPlayback = (event) => {
           this.lockGeneration += 1;
-          this.playbackText = this.selectedText;
-          this.playbackFrom = this.selectedFrom;
+          const detail = event?.detail;
+          if (detail?.text) {
+            this.playbackText = detail.text;
+            this.playbackFrom = detail.from ?? 0;
+          } else {
+            this.playbackText = this.selectedText;
+            this.playbackFrom = this.selectedFrom;
+          }
           this.highlightOffset = 0;
-          if (this.selectedText)
-            this.view.dispatch({ effects: spokenRangeLock.of({ from: this.selectedFrom, to: this.selectedFrom + this.selectedText.length }) });
+          if (this.playbackText && this.view.hasFocus) {
+            this.view.dispatch({ effects: spokenRangeLock.of({ from: this.playbackFrom, to: this.playbackFrom + this.playbackText.length }) });
+          }
         };
         this.clearLock = () => {
           if (this.unlockPending)
@@ -999,15 +1006,45 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
       if (this.isBusy()) {
         this.stop();
       } else {
-        const activeEditor = this.app.workspace.activeEditor?.editor;
-        if (activeEditor) {
-          const text = activeEditor.getSelection().trim();
-          if (text) {
-            void this.speak(text);
-          } else {
-            new import_obsidian4.Notice("Local voiceover: Select some text first to speak.");
+        const context = this.getActiveNoteContext();
+        if (context) {
+          if (context.isEntireNote) {
+            new import_obsidian4.Notice("Local voiceover: Speaking entire note\u2026");
           }
+          void this.speak(context.text, context.from);
+        } else {
+          new import_obsidian4.Notice("Local voiceover: No active note or selection to speak.");
         }
+      }
+    });
+    this.addCommand({
+      id: "speak-note-or-selection",
+      name: "Speak note or selection",
+      checkCallback: (checking) => {
+        const context = this.getActiveNoteContext();
+        if (!context || this.isBusy())
+          return false;
+        if (!checking) {
+          if (context.isEntireNote) {
+            new import_obsidian4.Notice("Local voiceover: Speaking entire note\u2026");
+          }
+          void this.speak(context.text, context.from);
+        }
+        return true;
+      }
+    });
+    this.addCommand({
+      id: "speak-entire-note",
+      name: "Speak entire note",
+      checkCallback: (checking) => {
+        const fullText = this.getEntireNoteText();
+        if (!fullText || this.isBusy())
+          return false;
+        if (!checking) {
+          new import_obsidian4.Notice("Local voiceover: Speaking entire note\u2026");
+          void this.speak(fullText, 0);
+        }
+        return true;
       }
     });
     this.addCommand({
@@ -1051,22 +1088,53 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
   unlockPlaybackRange() {
     window.dispatchEvent(new Event("local-voiceover-range-unlock"));
   }
+  getActiveNoteContext() {
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian4.MarkdownView);
+    if (!activeView)
+      return null;
+    if (activeView.editor) {
+      const selection = activeView.editor.getSelection().trim();
+      if (selection) {
+        const fromOffset = activeView.editor.posToOffset(activeView.editor.getCursor("from"));
+        return { text: selection, from: fromOffset, isEntireNote: false };
+      }
+    }
+    const domWin = activeView.containerEl.win ?? window;
+    const domSelection = domWin.getSelection()?.toString()?.trim();
+    if (domSelection) {
+      return { text: domSelection, from: 0, isEntireNote: false };
+    }
+    const fullText = (activeView.getViewData?.() ?? activeView.editor?.getValue?.() ?? "").trim();
+    if (fullText) {
+      return { text: fullText, from: 0, isEntireNote: true };
+    }
+    return null;
+  }
+  getEntireNoteText() {
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian4.MarkdownView);
+    if (!activeView)
+      return null;
+    const fullText = (activeView.getViewData?.() ?? activeView.editor?.getValue?.() ?? "").trim();
+    return fullText || null;
+  }
   speakCommand(checking, editor) {
     const text = editor.getSelection().trim();
     if (!text || this.isBusy())
       return false;
-    if (!checking)
-      window.setTimeout(() => void this.speak(text), 0);
+    if (!checking) {
+      const fromOffset = editor.posToOffset(editor.getCursor("from"));
+      window.setTimeout(() => void this.speak(text, fromOffset), 0);
+    }
     return true;
   }
-  async speak(text) {
+  async speak(text, from = 0) {
     if (!text || this.isBusy())
       return;
     const abort = new AbortController();
     this.abortController = abort;
     this.clearHighlight();
     this.unlockPlaybackRange();
-    window.dispatchEvent(new Event("local-voiceover-playback-start"));
+    window.dispatchEvent(new CustomEvent("local-voiceover-playback-start", { detail: { text, from } }));
     if (this.getActiveEngine() === "system") {
       this.setState("speaking");
       try {

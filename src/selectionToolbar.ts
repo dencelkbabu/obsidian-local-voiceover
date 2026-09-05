@@ -77,13 +77,20 @@ export function createSelectionToolbarExtension(actions: SelectionToolbarActions
 			private lockGeneration = 0;
 			private readonly refresh = () => this.scheduleRender();
 			private readonly highlightChunk = (event: Event) => this.applyChunkHighlight(event);
-			private readonly startPlayback = () => {
+			private readonly startPlayback = (event?: Event) => {
 				this.lockGeneration += 1;
-				this.playbackText = this.selectedText;
-				this.playbackFrom = this.selectedFrom;
+				const detail = (event as CustomEvent<{ text?: string; from?: number }> | undefined)?.detail;
+				if (detail?.text) {
+					this.playbackText = detail.text;
+					this.playbackFrom = detail.from ?? 0;
+				} else {
+					this.playbackText = this.selectedText;
+					this.playbackFrom = this.selectedFrom;
+				}
 				this.highlightOffset = 0;
-				if (this.selectedText)
-					this.view.dispatch({ effects: spokenRangeLock.of({ from: this.selectedFrom, to: this.selectedFrom + this.selectedText.length }) });
+				if (this.playbackText && this.view.hasFocus) {
+					this.view.dispatch({ effects: spokenRangeLock.of({ from: this.playbackFrom, to: this.playbackFrom + this.playbackText.length }) });
+				}
 			};
 			private readonly clearLock = () => {
 				if (this.unlockPending) return;

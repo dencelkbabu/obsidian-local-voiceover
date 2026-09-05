@@ -1,4 +1,4 @@
-import { Editor, Notice, Plugin, normalizePath } from "obsidian";
+import { Editor, MarkdownView, Notice, Plugin, normalizePath } from "obsidian";
 import { ModelCache } from "./src/modelCache";
 import { StreamPlayer } from "./src/player";
 import { WebSpeechPlayer } from "./src/webSpeechPlayer";
@@ -43,16 +43,46 @@ export default class LocalVoiceoverPlugin extends Plugin {
 			if (this.isBusy()) {
 				this.stop();
 			} else {
-				const activeEditor = this.app.workspace.activeEditor?.editor;
-				if (activeEditor) {
-					const text = activeEditor.getSelection().trim();
-					if (text) {
-						void this.speak(text);
-					} else {
-						new Notice("Local voiceover: Select some text first to speak.");
+				const context = this.getActiveNoteContext();
+				if (context) {
+					if (context.isEntireNote) {
+						new Notice("Local voiceover: Speaking entire note…");
 					}
+					void this.speak(context.text, context.from);
+				} else {
+					new Notice("Local voiceover: No active note or selection to speak.");
 				}
 			}
+		});
+
+		this.addCommand({
+			id: "speak-note-or-selection",
+			name: "Speak note or selection",
+			checkCallback: (checking) => {
+				const context = this.getActiveNoteContext();
+				if (!context || this.isBusy()) return false;
+				if (!checking) {
+					if (context.isEntireNote) {
+						new Notice("Local voiceover: Speaking entire note…");
+					}
+					void this.speak(context.text, context.from);
+				}
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "speak-entire-note",
+			name: "Speak entire note",
+			checkCallback: (checking) => {
+				const fullText = this.getEntireNoteText();
+				if (!fullText || this.isBusy()) return false;
+				if (!checking) {
+					new Notice("Local voiceover: Speaking entire note…");
+					void this.speak(fullText, 0);
+				}
+				return true;
+			},
 		});
 
 		this.addCommand({
@@ -102,20 +132,59 @@ export default class LocalVoiceoverPlugin extends Plugin {
 		window.dispatchEvent(new Event("local-voiceover-range-unlock"));
 	}
 
+	private getActiveNoteContext(): { text: string; from: number; isEntireNote: boolean } | null {
+		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (!activeView) return null;
+
+		// 1. Check if user has selected text in editor (Editing View)
+		if (activeView.editor) {
+			const selection = activeView.editor.getSelection().trim();
+			if (selection) {
+				const fromOffset = activeView.editor.posToOffset(activeView.editor.getCursor("from"));
+				return { text: selection, from: fromOffset, isEntireNote: false };
+			}
+		}
+
+		// 2. Check if user has highlighted text on screen in Reading View (DOM Selection)
+		const domWin = activeView.containerEl.win ?? window;
+		const domSelection = domWin.getSelection()?.toString()?.trim();
+		if (domSelection) {
+			return { text: domSelection, from: 0, isEntireNote: false };
+		}
+
+		// 3. Fallback: Retrieve the full note content for full-page voiceover
+		const fullText = (activeView.getViewData?.() ?? activeView.editor?.getValue?.() ?? "").trim();
+		if (fullText) {
+			return { text: fullText, from: 0, isEntireNote: true };
+		}
+
+		return null;
+	}
+
+	private getEntireNoteText(): string | null {
+		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (!activeView) return null;
+		const fullText = (activeView.getViewData?.() ?? activeView.editor?.getValue?.() ?? "").trim();
+		return fullText || null;
+	}
+
 	private speakCommand(checking: boolean, editor: Editor): boolean {
 		const text = editor.getSelection().trim();
 		if (!text || this.isBusy()) return false;
-		if (!checking) window.setTimeout(() => void this.speak(text), 0);
+		if (!checking) {
+			const fromOffset = editor.posToOffset(editor.getCursor("from"));
+			window.setTimeout(() => void this.speak(text, fromOffset), 0);
+		}
 		return true;
 	}
 
-	private async speak(text: string): Promise<void> {
+	private async speak(text: string, from = 0): Promise<void> {
 		if (!text || this.isBusy()) return;
 		const abort = new AbortController();
 		this.abortController = abort;
 		this.clearHighlight();
 		this.unlockPlaybackRange();
-		window.dispatchEvent(new Event("local-voiceover-playback-start"));
+		window.dispatchEvent(new CustomEvent("local-voiceover-playback-start", { detail: { text, from } }));
 
 		if (this.getActiveEngine() === "system") {
 			this.setState("speaking");
