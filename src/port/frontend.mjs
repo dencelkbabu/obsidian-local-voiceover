@@ -36,7 +36,7 @@ const LETTERS = {
 	M: "em",
 	N: "en",
 	O: "oh",
-	P: "cue",
+	P: "pee",
 	Q: "cue",
 	R: "ar",
 	S: "ess",
@@ -48,6 +48,12 @@ const LETTERS = {
 	Y: "why",
 	Z: "zee",
 };
+const SPELLED_OUT_ACRONYMS = new Set([
+	"AI", "API", "CEO", "CFO", "CIA", "COO", "CTO", "DIY", "DOB", "ETA",
+	"FAQ", "FBI", "GPS", "HR", "ID", "IP", "IT", "LLM", "MVP", "OS",
+	"PC", "PIN", "PR", "QA", "ROI", "SOS", "TBD", "TTS", "UI", "URL",
+	"USA", "USB", "UX", "VIP", "VPN", "VR", "VS",
+]);
 const SMALL = [
 	"zero",
 	"one",
@@ -234,9 +240,12 @@ export function normalizeText(input) {
 	text = text.replace(/\b\d[\d,]*\b/g, (value) =>
 		words(Number(value.replace(/,/g, ""))),
 	);
-	text = text.replace(/\b[A-Z]{2,}\b/g, (value) =>
-		[...value].map((letter) => LETTERS[letter]).join(" "),
-	);
+	text = text.replace(/\b[A-Z]{2,}\b/g, (value) => {
+		if (SPELLED_OUT_ACRONYMS.has(value) || !/[AEIOUY]/.test(value)) {
+			return [...value].map((letter) => LETTERS[letter] ?? letter).join(" ");
+		}
+		return value.toLowerCase();
+	});
 	return text
 		.replace(/,(?:\s*,)+/g, ",")
 		.replace(/,\s*([.!?])/g, "$1")
