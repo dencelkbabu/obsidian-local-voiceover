@@ -664,7 +664,7 @@ function createSelectionToolbarExtension(actions) {
         });
       }
       applyChunkHighlight(event) {
-        if (!actions.isHighlightEnabled() || !this.playbackText)
+        if (!this.playbackText)
           return;
         const source = event.detail?.source;
         if (!source)
@@ -673,9 +673,18 @@ function createSelectionToolbarExtension(actions) {
         if (!range)
           return;
         this.highlightOffset = range.to;
-        this.view.dispatch({
-          effects: setPlaybackHighlight.of({ from: this.playbackFrom + range.from, to: this.playbackFrom + range.to })
-        });
+        const targetFrom = this.playbackFrom + range.from;
+        const targetTo = this.playbackFrom + range.to;
+        const effects = [];
+        if (actions.isHighlightEnabled()) {
+          effects.push(setPlaybackHighlight.of({ from: targetFrom, to: targetTo }));
+        }
+        if (actions.isAutoScrollEnabled?.()) {
+          effects.push(import_view.EditorView.scrollIntoView(targetFrom, { y: "nearest", yMargin: 90 }));
+        }
+        if (effects.length > 0) {
+          this.view.dispatch({ effects });
+        }
       }
       findSourceRange(source) {
         const direct = this.playbackText.indexOf(source, this.highlightOffset);
@@ -743,6 +752,7 @@ var DEFAULT_SETTINGS = {
   systemVoiceURI: "",
   systemPitch: 1,
   highlightSpokenText: true,
+  autoScrollToSpokenText: true,
   speed: 1,
   variation: 0.667,
   seed: 0,
@@ -758,6 +768,10 @@ function normalizeSpeechSettings(settings) {
     settings.systemPitch = DEFAULT_SETTINGS.systemPitch;
   else
     settings.systemPitch = Math.min(1.5, Math.max(0.5, settings.systemPitch));
+  if (typeof settings.highlightSpokenText !== "boolean")
+    settings.highlightSpokenText = DEFAULT_SETTINGS.highlightSpokenText;
+  if (typeof settings.autoScrollToSpokenText !== "boolean")
+    settings.autoScrollToSpokenText = DEFAULT_SETTINGS.autoScrollToSpokenText;
   settings.speed = Math.min(2, Math.max(0.5, settings.speed));
   settings.variation = Math.min(1, Math.max(0, settings.variation));
   settings.seed = Number.isSafeInteger(settings.seed) ? settings.seed : DEFAULT_SETTINGS.seed;
@@ -991,6 +1005,12 @@ var LocalVoiceoverSettingTab = class extends import_obsidian3.PluginSettingTab {
       this.voiceover.clearHighlight();
       await this.voiceover.saveSettings();
     }));
+    const autoScroll = new import_obsidian3.Setting(containerEl).setName("Auto-scroll to spoken sentence");
+    addInfo(autoScroll, "Automatically keep the editor scrolled to the currently spoken sentence.");
+    autoScroll.addToggle((toggle) => toggle.setValue(this.voiceover.settings.autoScrollToSpokenText).onChange(async (value) => {
+      this.voiceover.settings.autoScrollToSpokenText = value;
+      await this.voiceover.saveSettings();
+    }));
   }
 };
 
@@ -1085,7 +1105,7 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
     this.player.setOnStateChange(() => this.syncPlaybackState());
     this.webPlayer.setOnStateChange(() => this.syncPlaybackState());
     this.webPlayer.setOnChunkStart((source) => {
-      if (this.settings.highlightSpokenText) {
+      if (this.settings.highlightSpokenText || this.settings.autoScrollToSpokenText) {
         window.dispatchEvent(new CustomEvent("local-voiceover-highlight", { detail: { source } }));
       }
     });
@@ -1095,6 +1115,7 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
       createSelectionToolbarExtension({
         getState: () => this.state,
         isHighlightEnabled: () => this.settings.highlightSpokenText,
+        isAutoScrollEnabled: () => this.settings.autoScrollToSpokenText,
         speak: (text, from) => void this.speak(text, from),
         pause: () => void this.pause(),
         resume: () => void this.resume(),
@@ -1182,6 +1203,37 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
         return true;
       }
     });
+    const onHighlight = (event) => {
+      if (!this.settings.autoScrollToSpokenText)
+        return;
+      const activeView = this.app.workspace.getActiveViewOfType(import_obsidian4.MarkdownView);
+      if (!activeView || activeView.getMode() !== "preview")
+        return;
+      const source = event.detail?.source;
+      if (!source)
+        return;
+      const previewEl = activeView.previewMode?.containerEl;
+      if (!previewEl)
+        return;
+      const words = source.match(/[\p{L}\p{N}]+/gu);
+      if (!words || words.length === 0)
+        return;
+      const search = words.slice(0, 4).join(" ").toLowerCase();
+      const walker = activeDocument.createTreeWalker(previewEl, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node) {
+        if (node.textContent && node.textContent.toLowerCase().includes(search)) {
+          const parentEl = node.parentElement;
+          if (parentEl) {
+            parentEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            break;
+          }
+        }
+        node = walker.nextNode();
+      }
+    };
+    window.addEventListener("local-voiceover-highlight", onHighlight);
+    this.register(() => window.removeEventListener("local-voiceover-highlight", onHighlight));
     this.register(() => this.disposeRuntime());
   }
   async loadSettings() {
@@ -1402,7 +1454,7 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
           edgeFade(chunk.waveform),
           Number(boundaryPauseSeconds(chunk.source)),
           () => {
-            if (this.settings.highlightSpokenText)
+            if (this.settings.highlightSpokenText || this.settings.autoScrollToSpokenText)
               window.dispatchEvent(new CustomEvent("local-voiceover-highlight", { detail: { source: chunk.source } }));
           }
         );

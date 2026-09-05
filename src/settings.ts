@@ -16,6 +16,7 @@ export interface LocalVoiceoverSettings {
 	systemVoiceURI: string;
 	systemPitch: number;
 	highlightSpokenText: boolean;
+	autoScrollToSpokenText: boolean;
 	speed: number;
 	variation: number;
 	seed: number;
@@ -37,6 +38,7 @@ export const DEFAULT_SETTINGS: LocalVoiceoverSettings = {
 	systemVoiceURI: "",
 	systemPitch: 1,
 	highlightSpokenText: true,
+	autoScrollToSpokenText: true,
 	speed: 1,
 	variation: 0.667,
 	seed: 0,
@@ -53,6 +55,10 @@ export function normalizeSpeechSettings(settings: LocalVoiceoverSettings): void 
 		settings.systemPitch = DEFAULT_SETTINGS.systemPitch;
 	else
 		settings.systemPitch = Math.min(1.5, Math.max(0.5, settings.systemPitch));
+	if (typeof settings.highlightSpokenText !== "boolean")
+		settings.highlightSpokenText = DEFAULT_SETTINGS.highlightSpokenText;
+	if (typeof settings.autoScrollToSpokenText !== "boolean")
+		settings.autoScrollToSpokenText = DEFAULT_SETTINGS.autoScrollToSpokenText;
 	settings.speed = Math.min(2, Math.max(0.5, settings.speed));
 	settings.variation = Math.min(1, Math.max(0, settings.variation));
 	settings.seed = Number.isSafeInteger(settings.seed) ? settings.seed : DEFAULT_SETTINGS.seed;

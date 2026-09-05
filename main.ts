@@ -25,7 +25,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 		this.player.setOnStateChange(() => this.syncPlaybackState());
 		this.webPlayer.setOnStateChange(() => this.syncPlaybackState());
 		this.webPlayer.setOnChunkStart((source) => {
-			if (this.settings.highlightSpokenText) {
+			if (this.settings.highlightSpokenText || this.settings.autoScrollToSpokenText) {
 				window.dispatchEvent(new CustomEvent("local-voiceover-highlight", { detail: { source } }));
 			}
 		});
@@ -36,6 +36,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 			createSelectionToolbarExtension({
 				getState: () => this.state,
 				isHighlightEnabled: () => this.settings.highlightSpokenText,
+				isAutoScrollEnabled: () => this.settings.autoScrollToSpokenText,
 				speak: (text, from) => void this.speak(text, from),
 				pause: () => void this.pause(),
 				resume: () => void this.resume(),
@@ -123,6 +124,38 @@ export default class LocalVoiceoverPlugin extends Plugin {
 				return true;
 			},
 		});
+
+		const onHighlight = (event: Event) => {
+			if (!this.settings.autoScrollToSpokenText) return;
+			const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+			if (!activeView || activeView.getMode() !== "preview") return;
+
+			const source = (event as CustomEvent<{ source?: string }>).detail?.source;
+			if (!source) return;
+
+			const previewEl = activeView.previewMode?.containerEl;
+			if (!previewEl) return;
+
+			const words = source.match(/[\p{L}\p{N}]+/gu);
+			if (!words || words.length === 0) return;
+			const search = words.slice(0, 4).join(" ").toLowerCase();
+
+			const walker = activeDocument.createTreeWalker(previewEl, NodeFilter.SHOW_TEXT);
+			let node = walker.nextNode();
+			while (node) {
+				if (node.textContent && node.textContent.toLowerCase().includes(search)) {
+					const parentEl = node.parentElement;
+					if (parentEl) {
+						parentEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+						break;
+					}
+				}
+				node = walker.nextNode();
+			}
+		};
+
+		window.addEventListener("local-voiceover-highlight", onHighlight);
+		this.register(() => window.removeEventListener("local-voiceover-highlight", onHighlight));
 
 		this.register(() => this.disposeRuntime());
 	}
@@ -369,7 +402,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 					edgeFade(chunk.waveform) as Float32Array,
 					Number(boundaryPauseSeconds(chunk.source)),
 					() => {
-						if (this.settings.highlightSpokenText)
+						if (this.settings.highlightSpokenText || this.settings.autoScrollToSpokenText)
 							window.dispatchEvent(new CustomEvent("local-voiceover-highlight", { detail: { source: chunk.source } }));
 					},
 				);

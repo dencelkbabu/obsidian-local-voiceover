@@ -257,5 +257,12 @@ export class LocalVoiceoverSettingTab extends PluginSettingTab {
 			this.voiceover.clearHighlight();
 			await this.voiceover.saveSettings();
 		}));
+
+		const autoScroll = new Setting(containerEl).setName("Auto-scroll to spoken sentence");
+		addInfo(autoScroll, "Automatically keep the editor scrolled to the currently spoken sentence.");
+		autoScroll.addToggle((toggle) => toggle.setValue(this.voiceover.settings.autoScrollToSpokenText).onChange(async (value) => {
+			this.voiceover.settings.autoScrollToSpokenText = value;
+			await this.voiceover.saveSettings();
+		}));
 	}
 }

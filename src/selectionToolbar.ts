@@ -7,6 +7,7 @@ export type VoiceoverState = "idle" | "loading" | "generating" | "speaking" | "p
 export interface SelectionToolbarActions {
 	getState(): VoiceoverState;
 	isHighlightEnabled(): boolean;
+	isAutoScrollEnabled?(): boolean;
 	speak(text: string, from?: number): void;
 	pause?(): void;
 	resume?(): void;
@@ -201,15 +202,28 @@ export function createSelectionToolbarExtension(actions: SelectionToolbarActions
 			}
 
 			private applyChunkHighlight(event: Event): void {
-				if (!actions.isHighlightEnabled() || !this.playbackText) return;
+				if (!this.playbackText) return;
 				const source = (event as CustomEvent<{ source?: string }>).detail?.source;
 				if (!source) return;
 				const range = this.findSourceRange(source);
 				if (!range) return;
 				this.highlightOffset = range.to;
-				this.view.dispatch({
-					effects: setPlaybackHighlight.of({ from: this.playbackFrom + range.from, to: this.playbackFrom + range.to }),
-				});
+
+				const targetFrom = this.playbackFrom + range.from;
+				const targetTo = this.playbackFrom + range.to;
+				const effects: StateEffect<unknown>[] = [];
+
+				if (actions.isHighlightEnabled()) {
+					effects.push(setPlaybackHighlight.of({ from: targetFrom, to: targetTo }));
+				}
+
+				if (actions.isAutoScrollEnabled?.()) {
+					effects.push(EditorView.scrollIntoView(targetFrom, { y: "nearest", yMargin: 90 }));
+				}
+
+				if (effects.length > 0) {
+					this.view.dispatch({ effects });
+				}
 			}
 
 			private findSourceRange(source: string): { from: number; to: number } | null {
