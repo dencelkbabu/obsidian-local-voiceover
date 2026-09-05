@@ -59,21 +59,42 @@ export class LocalVoiceoverSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
+		const hasWebSpeech = WebSpeechPlayer.isSupported();
+		if (!hasWebSpeech && this.voiceover.settings.ttsEngine === "system") {
+			this.voiceover.settings.ttsEngine = "inflect";
+			void this.voiceover.saveSettings();
+		}
+
 		addSection(containerEl, "Engine");
 		const engineSetting = new Setting(containerEl).setName("Voice engine");
 		addInfo(engineSetting, "Choose between native operating system voices (zero download) or local ONNX synthesis.");
+
+		const options: Record<string, string> = {};
+		if (hasWebSpeech) {
+			options.system = "System (Native OS Voices)";
+		} else {
+			options.system = "System (Unavailable on mobile WebView)";
+		}
+		options.inflect = "Inflect Micro v2 (Local ONNX)";
+
 		engineSetting.addDropdown((dropdown) => dropdown
-			.addOptions({
-				system: "System (Native OS Voices)",
-				inflect: "Inflect Micro v2 (Local ONNX)",
-			})
+			.addOptions(options)
 			.setValue(this.voiceover.settings.ttsEngine)
 			.onChange(async (value) => {
-				this.voiceover.settings.ttsEngine = value as TTSEngine;
+				if (!hasWebSpeech && value === "system") {
+					this.voiceover.settings.ttsEngine = "inflect";
+				} else {
+					this.voiceover.settings.ttsEngine = value as TTSEngine;
+				}
 				await this.voiceover.saveSettings();
 				// eslint-disable-next-line @typescript-eslint/no-deprecated
 				this.display();
 			}));
+
+		if (!hasWebSpeech) {
+			const noticeEl = containerEl.createDiv({ cls: "local-voiceover-settings-notice" });
+			noticeEl.setText("Notice: Web speech API is not supported by Android webview. Automatically using inflect micro v2 on this device.");
+		}
 
 		addSection(containerEl, "Voice");
 

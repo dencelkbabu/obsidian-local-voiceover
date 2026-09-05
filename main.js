@@ -674,17 +674,34 @@ var LocalVoiceoverSettingTab = class extends import_obsidian3.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
+    const hasWebSpeech = WebSpeechPlayer.isSupported();
+    if (!hasWebSpeech && this.voiceover.settings.ttsEngine === "system") {
+      this.voiceover.settings.ttsEngine = "inflect";
+      void this.voiceover.saveSettings();
+    }
     addSection(containerEl, "Engine");
     const engineSetting = new import_obsidian3.Setting(containerEl).setName("Voice engine");
     addInfo(engineSetting, "Choose between native operating system voices (zero download) or local ONNX synthesis.");
-    engineSetting.addDropdown((dropdown) => dropdown.addOptions({
-      system: "System (Native OS Voices)",
-      inflect: "Inflect Micro v2 (Local ONNX)"
-    }).setValue(this.voiceover.settings.ttsEngine).onChange(async (value) => {
-      this.voiceover.settings.ttsEngine = value;
+    const options = {};
+    if (hasWebSpeech) {
+      options.system = "System (Native OS Voices)";
+    } else {
+      options.system = "System (Unavailable on mobile WebView)";
+    }
+    options.inflect = "Inflect Micro v2 (Local ONNX)";
+    engineSetting.addDropdown((dropdown) => dropdown.addOptions(options).setValue(this.voiceover.settings.ttsEngine).onChange(async (value) => {
+      if (!hasWebSpeech && value === "system") {
+        this.voiceover.settings.ttsEngine = "inflect";
+      } else {
+        this.voiceover.settings.ttsEngine = value;
+      }
       await this.voiceover.saveSettings();
       this.display();
     }));
+    if (!hasWebSpeech) {
+      const noticeEl = containerEl.createDiv({ cls: "local-voiceover-settings-notice" });
+      noticeEl.setText("Notice: Web speech API is not supported by Android webview. Automatically using inflect micro v2 on this device.");
+    }
     addSection(containerEl, "Voice");
     if (this.voiceover.settings.ttsEngine === "system") {
       const voiceSetting = new import_obsidian3.Setting(containerEl).setName("System voice");
@@ -692,15 +709,15 @@ var LocalVoiceoverSettingTab = class extends import_obsidian3.PluginSettingTab {
       const populateVoices = (voices) => {
         voiceSetting.controlEl.empty();
         voiceSetting.addDropdown((dropdown) => {
-          const options = {};
+          const options2 = {};
           if (voices.length === 0) {
-            options[""] = "Default System Voice";
+            options2[""] = "Default System Voice";
           } else {
             for (const voice of voices) {
-              options[voice.voiceURI] = `${voice.name} (${voice.lang})`;
+              options2[voice.voiceURI] = `${voice.name} (${voice.lang})`;
             }
           }
-          dropdown.addOptions(options);
+          dropdown.addOptions(options2);
           const currentURI = this.voiceover.settings.systemVoiceURI;
           const isValid = voices.some((v) => v.voiceURI === currentURI);
           const valueToSet = isValid ? currentURI : voices[0]?.voiceURI ?? "";
@@ -977,7 +994,16 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
   async loadSettings() {
     const saved = await this.loadData();
     this.settings = { ...DEFAULT_SETTINGS, ...saved };
+    if (!WebSpeechPlayer.isSupported() && this.settings.ttsEngine === "system") {
+      this.settings.ttsEngine = "inflect";
+    }
     normalizeSpeechSettings(this.settings);
+  }
+  getActiveEngine() {
+    if (this.settings.ttsEngine === "system" && !WebSpeechPlayer.isSupported()) {
+      return "inflect";
+    }
+    return this.settings.ttsEngine;
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -1004,7 +1030,7 @@ var LocalVoiceoverPlugin = class extends import_obsidian4.Plugin {
     this.clearHighlight();
     this.unlockPlaybackRange();
     window.dispatchEvent(new Event("local-voiceover-playback-start"));
-    if (this.settings.ttsEngine === "system") {
+    if (this.getActiveEngine() === "system") {
       this.setState("speaking");
       try {
         await this.webPlayer.speak(text, this.settings, abort.signal);

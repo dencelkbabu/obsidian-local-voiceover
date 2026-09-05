@@ -77,7 +77,17 @@ export default class LocalVoiceoverPlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		const saved = (await this.loadData()) as Partial<LocalVoiceoverSettings> | null;
 		this.settings = { ...DEFAULT_SETTINGS, ...saved };
+		if (!WebSpeechPlayer.isSupported() && this.settings.ttsEngine === "system") {
+			this.settings.ttsEngine = "inflect";
+		}
 		normalizeSpeechSettings(this.settings);
+	}
+
+	getActiveEngine(): "system" | "inflect" {
+		if (this.settings.ttsEngine === "system" && !WebSpeechPlayer.isSupported()) {
+			return "inflect";
+		}
+		return this.settings.ttsEngine;
 	}
 
 	async saveSettings(): Promise<void> {
@@ -107,7 +117,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 		this.unlockPlaybackRange();
 		window.dispatchEvent(new Event("local-voiceover-playback-start"));
 
-		if (this.settings.ttsEngine === "system") {
+		if (this.getActiveEngine() === "system") {
 			this.setState("speaking");
 			try {
 				await this.webPlayer.speak(text, this.settings, abort.signal);
