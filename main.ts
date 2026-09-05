@@ -142,6 +142,19 @@ export default class LocalVoiceoverPlugin extends Plugin {
 			if (abort.signal.aborted) return;
 			this.setState("generating");
 			new Notice("Generating local speech…");
+			const pendingChunks: Array<{ waveform: Float32Array; source: string }> = [];
+			const enqueueChunk = (chunk: { waveform: Float32Array; source: string }) => {
+				this.setState("speaking");
+				this.player.queue(
+					edgeFade(chunk.waveform) as Float32Array,
+					Number(boundaryPauseSeconds(chunk.source)),
+					() => {
+						if (this.settings.highlightSpokenText)
+							window.dispatchEvent(new CustomEvent("local-voiceover-highlight", { detail: { source: chunk.source } }));
+					},
+				);
+			};
+
 			await worker.synthesize(
 				text,
 				{
@@ -152,20 +165,27 @@ export default class LocalVoiceoverPlugin extends Plugin {
 					markdownRules: this.settings.markdownRules,
 				},
 				(chunk) => {
-					if (!abort.signal.aborted) {
-						this.setState("speaking");
-						this.player.queue(
-							edgeFade(chunk.waveform) as Float32Array,
-							Number(boundaryPauseSeconds(chunk.source)),
-							() => {
-								if (this.settings.highlightSpokenText)
-									window.dispatchEvent(new CustomEvent("local-voiceover-highlight", { detail: { source: chunk.source } }));
-							},
-						);
+					if (abort.signal.aborted) return;
+					const durationSeconds = chunk.waveform.length / 24000;
+					if (!this.player.isPlaying && pendingChunks.length === 0 && durationSeconds < 1.0) {
+						pendingChunks.push(chunk);
+						return;
 					}
+					while (pendingChunks.length > 0) {
+						const buffered = pendingChunks.shift();
+						if (buffered) enqueueChunk(buffered);
+					}
+					enqueueChunk(chunk);
 				},
 				abort.signal,
 			);
+
+			if (!abort.signal.aborted) {
+				while (pendingChunks.length > 0) {
+					const buffered = pendingChunks.shift();
+					if (buffered) enqueueChunk(buffered);
+				}
+			}
 		} catch (error) {
 			if (!abort.signal.aborted) {
 				console.error("Local Voiceover synthesis failed", error);

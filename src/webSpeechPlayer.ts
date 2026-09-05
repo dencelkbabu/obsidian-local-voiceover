@@ -129,6 +129,9 @@ export class WebSpeechPlayer {
 
 				const chunk: string = chunks[i];
 				await this.speakChunk(chunk, targetVoice, settings.speed, settings.systemPitch, abort.signal);
+				if (/^(?:part|chapter|section)?\s*\d+[.):]?$/i.test(chunk.trim()) && !abort.signal.aborted && !signal?.aborted) {
+					await new Promise((resolve) => window.setTimeout(resolve, 1000));
+				}
 			}
 		} finally {
 			if (this.currentAbort === abort) {

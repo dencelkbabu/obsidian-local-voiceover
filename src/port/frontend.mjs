@@ -262,10 +262,29 @@ function restorePunctuation(ipa, normalized) {
 }
 
 export function splitText(text, limit = 280) {
-	const normalized = text.trim().replace(/\s+/g, " ");
-	const sentences = normalized.split(/(?<=[.!?;:])\s+/).filter(Boolean);
+	const lines = text.split(/\r?\n+/).map((line) => line.trim()).filter(Boolean);
+	const prefixRegex = /^(\s*(?:(?:part|chapter|section)\s+\d+|\d+)[.):])\s+(.+)$/i;
+	const sentenceRegex = /(?<=[!?]|(?<!\b(?:[A-Za-z]|Dr|Mr|Mrs|Ms|Prof|Sr|Jr|vs|etc|e\.g|i\.e)|\d)\.)\s+/i;
+	const sentences = [];
+	for (const line of lines) {
+		let currentLine = line;
+		const prefixMatch = currentLine.match(prefixRegex);
+		if (prefixMatch) {
+			sentences.push(prefixMatch[1].trim());
+			currentLine = prefixMatch[2].trim();
+		}
+		const parts = currentLine
+			.split(sentenceRegex)
+			.map((sentence) => sentence.trim().replace(/\s+/g, " "))
+			.filter(Boolean);
+		sentences.push(...parts);
+	}
+	if (!sentences.length) {
+		const fallback = text.trim().replace(/\s+/g, " ");
+		if (fallback) sentences.push(fallback);
+	}
 	const chunks = [];
-	for (let sentence of sentences.length ? sentences : [normalized]) {
+	for (let sentence of sentences) {
 		while (sentence.length > limit) {
 			const search = sentence.slice(0, limit + 1);
 			const punctuation = Math.max(

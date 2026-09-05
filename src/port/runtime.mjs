@@ -26,9 +26,11 @@ export function seededNormalNoise(seed, channels, frames) {
 }
 
 export function boundaryPauseSeconds(chunk) {
+	const trimmed = chunk.trim();
+	if (/^(?:part|chapter|section)?\s*\d+[.):]?$/i.test(trimmed)) return 1.0;
 	return (
 		{ "?": 0.28, "!": 0.24, ".": 0.22, ";": 0.16, ":": 0.13, ",": 0.09 }[
-			chunk.trim().at(-1)
+			trimmed.at(-1)
 		] ?? 0.08
 	);
 }
