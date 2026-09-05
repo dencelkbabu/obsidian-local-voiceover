@@ -328,7 +328,7 @@ var WebSpeechPlayer = class {
         const chunk = chunks[i];
         await this.speakChunk(chunk, targetVoice, settings.speed, settings.systemPitch, abort.signal);
         if (/^(?:part|chapter|section)?\s*\d+[.):]?$/i.test(chunk.trim()) && !abort.signal.aborted && !signal?.aborted) {
-          await new Promise((resolve) => window.setTimeout(resolve, 1e3));
+          await new Promise((resolve) => window.setTimeout(resolve, 550));
         }
       }
     } finally {
@@ -406,7 +406,7 @@ var SAMPLE_RATE = 24e3;
 function boundaryPauseSeconds(chunk) {
   const trimmed = chunk.trim();
   if (/^(?:part|chapter|section)?\s*\d+[.):]?$/i.test(trimmed))
-    return 1;
+    return 0.55;
   return { "?": 0.28, "!": 0.24, ".": 0.22, ";": 0.16, ":": 0.13, ",": 0.09 }[trimmed.at(-1)] ?? 0.08;
 }
 function edgeFade(samples, sampleRate = SAMPLE_RATE, milliseconds = 5) {
