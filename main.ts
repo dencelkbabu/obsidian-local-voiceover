@@ -39,20 +39,10 @@ export default class LocalVoiceoverPlugin extends Plugin {
 			}),
 		]);
 
+		this.registerViewActions();
+
 		this.addRibbonIcon("volume-2", "Local voiceover: Speak / stop", () => {
-			if (this.isBusy()) {
-				this.stop();
-			} else {
-				const context = this.getActiveNoteContext();
-				if (context) {
-					if (context.isEntireNote) {
-						new Notice("Local voiceover: Speaking entire note…");
-					}
-					void this.speak(context.text, context.from);
-				} else {
-					new Notice("Local voiceover: No active note or selection to speak.");
-				}
-			}
+			this.togglePlayback();
 		});
 
 		this.addCommand({
@@ -60,12 +50,9 @@ export default class LocalVoiceoverPlugin extends Plugin {
 			name: "Speak note or selection",
 			checkCallback: (checking) => {
 				const context = this.getActiveNoteContext();
-				if (!context || this.isBusy()) return false;
+				if (!context && !this.isBusy()) return false;
 				if (!checking) {
-					if (context.isEntireNote) {
-						new Notice("Local voiceover: Speaking entire note…");
-					}
-					void this.speak(context.text, context.from);
+					this.togglePlayback();
 				}
 				return true;
 			},
@@ -178,8 +165,73 @@ export default class LocalVoiceoverPlugin extends Plugin {
 		return true;
 	}
 
+	private togglePlayback(): void {
+		if (this.isBusy()) {
+			this.stop();
+		} else {
+			const context = this.getActiveNoteContext();
+			if (context) {
+				if (context.isEntireNote) {
+					new Notice("Local voiceover: Speaking entire note…");
+				}
+				void this.speak(context.text, context.from);
+			} else {
+				new Notice("Local voiceover: No active note or selection to speak.");
+			}
+		}
+	}
+
+	private registerViewActions(): void {
+		const addActionToView = (view: MarkdownView) => {
+			if (view.containerEl.querySelector(".local-voiceover-view-action")) return;
+			const actionEl = view.addAction("volume-2", "Local voiceover: Speak / stop", () => {
+				this.togglePlayback();
+			});
+			actionEl.addClass("local-voiceover-view-action");
+		};
+
+		this.registerEvent(
+			this.app.workspace.on("active-leaf-change", (leaf) => {
+				if (leaf?.view instanceof MarkdownView) {
+					addActionToView(leaf.view);
+				}
+			})
+		);
+
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			if (leaf.view instanceof MarkdownView) {
+				addActionToView(leaf.view);
+			}
+		});
+	}
+
+	private activeSpeakPromise: Promise<void> | null = null;
+
 	private async speak(text: string, from = 0): Promise<void> {
-		if (!text || this.isBusy()) return;
+		if (!text) return;
+		if (this.isBusy()) {
+			this.stop();
+			if (this.activeSpeakPromise) {
+				try {
+					await this.activeSpeakPromise;
+				} catch {
+					// ignore previous abort
+				}
+			}
+		}
+
+		const promise = this.doSpeak(text, from);
+		this.activeSpeakPromise = promise;
+		try {
+			await promise;
+		} finally {
+			if (this.activeSpeakPromise === promise) {
+				this.activeSpeakPromise = null;
+			}
+		}
+	}
+
+	private async doSpeak(text: string, from = 0): Promise<void> {
 		const abort = new AbortController();
 		this.abortController = abort;
 		this.clearHighlight();

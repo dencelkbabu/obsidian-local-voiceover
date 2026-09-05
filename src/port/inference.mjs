@@ -32,7 +32,8 @@ export async function createInflectInference({ loadModel, wasmPaths = "./wasm/" 
 		};
 		const [duration, decode] = await createSessions("wasm");
 
-		const runChunk = async (output, seed, speed, variation) => {
+		const runChunk = async (output, seed, speed, variation, signal) => {
+			if (signal?.aborted) throw new DOMException("Synthesis aborted.", "AbortError");
 			if (output.ids.length > MAX_TOKENS)
 				throw new Error(`Token limit exceeded: ${output.ids.length}`);
 			const tokens = BigInt64Array.from(output.ids, BigInt);
@@ -41,6 +42,7 @@ export async function createInflectInference({ loadModel, wasmPaths = "./wasm/" 
 				lengths: new ort.Tensor("int64", BigInt64Array.of(BigInt(tokens.length)), [1]),
 				length_scale: new ort.Tensor("float32", Float32Array.of(1 / speed), []),
 			});
+			if (signal?.aborted) throw new DOMException("Synthesis aborted.", "AbortError");
 			const mPExp = durationOutput.m_p_exp;
 			const waveform = (await decode.run({
 				m_p_exp: mPExp,
@@ -49,10 +51,11 @@ export async function createInflectInference({ loadModel, wasmPaths = "./wasm/" 
 				zp_noise: new ort.Tensor("float32", seededNormalNoise(seed, 1, mPExp.data.length), mPExp.dims),
 				noise_scale: new ort.Tensor("float32", Float32Array.of(variation), []),
 			})).waveform.data;
+			if (signal?.aborted) throw new DOMException("Synthesis aborted.", "AbortError");
 			return { waveform };
 		};
-		const synthesizeChunk = (output, seed, speed, variation) =>
-			runChunk(output, seed, speed, variation);
+		const synthesizeChunk = (output, seed, speed, variation, signal) =>
+			runChunk(output, seed, speed, variation, signal);
 
 		return {
 			frontend,
@@ -62,7 +65,8 @@ export async function createInflectInference({ loadModel, wasmPaths = "./wasm/" 
 				const pieces = [];
 				for (let index = 0; index < outputs.length; index += 1) {
 					if (signal?.aborted) throw new DOMException("Synthesis aborted.", "AbortError");
-					const piece = await synthesizeChunk(outputs[index], seed + index, speed, variation);
+					const piece = await synthesizeChunk(outputs[index], seed + index, speed, variation, signal);
+					if (signal?.aborted) throw new DOMException("Synthesis aborted.", "AbortError");
 					pieces.push(piece);
 					await onChunk?.({ ...piece, index, total: outputs.length, source: sourceChunks[index] });
 				}

@@ -31,6 +31,8 @@ self.onmessage = (event: MessageEvent<InitMessage | SynthesizeMessage | AbortMes
 	void handleMessage(event.data);
 };
 
+let activeTask: Promise<void> | null = null;
+
 async function handleMessage(message: InitMessage | SynthesizeMessage | AbortMessage): Promise<void> {
 	if (message.type === "abort") {
 		controllers.get(message.id)?.abort();
@@ -52,28 +54,58 @@ async function handleMessage(message: InitMessage | SynthesizeMessage | AbortMes
 		post({ type: "error", id: message.id, message: "Speech worker is not initialized." });
 		return;
 	}
+
+	// Abort any active synthesis so ONNX sessions are never run concurrently
+	for (const controller of controllers.values()) {
+		controller.abort();
+	}
+	if (activeTask) {
+		try {
+			await activeTask;
+		} catch {
+			// ignore previous abort
+		}
+	}
+
 	const controller = new AbortController();
 	controllers.set(message.id, controller);
+
+	const task = (async () => {
+		try {
+			await (inference.synthesize as (text: string, options: Record<string, unknown>) => Promise<unknown>)(message.text, {
+				speed: message.speed,
+				variation: message.variation,
+				seed: message.seed,
+				markdownNormalization: message.markdownNormalization,
+				markdownRules: message.markdownRules,
+				signal: controller.signal,
+				onChunk: async (chunk: { waveform: Float32Array; source: string }) => {
+					if (controller.signal.aborted) return;
+					post(
+						{ type: "chunk", id: message.id, waveform: chunk.waveform, source: chunk.source },
+						[chunk.waveform.buffer as ArrayBuffer],
+					);
+				},
+			});
+			if (!controller.signal.aborted) {
+				post({ type: "complete", id: message.id });
+			} else {
+				post({ type: "error", id: message.id, message: "Synthesis aborted." });
+			}
+		} catch (error) {
+			post({ type: "error", id: message.id, message: errorMessage(error) });
+		} finally {
+			controllers.delete(message.id);
+		}
+	})();
+
+	activeTask = task;
 	try {
-		await (inference.synthesize as (text: string, options: Record<string, unknown>) => Promise<unknown>)(message.text, {
-			speed: message.speed,
-			variation: message.variation,
-			seed: message.seed,
-			markdownNormalization: message.markdownNormalization,
-			markdownRules: message.markdownRules,
-			signal: controller.signal,
-			onChunk: async (chunk: { waveform: Float32Array; source: string }) => {
-				post(
-					{ type: "chunk", id: message.id, waveform: chunk.waveform, source: chunk.source },
-					[chunk.waveform.buffer as ArrayBuffer],
-				);
-			},
-		});
-		post({ type: "complete", id: message.id });
-	} catch (error) {
-		post({ type: "error", id: message.id, message: errorMessage(error) });
+		await task;
 	} finally {
-		controllers.delete(message.id);
+		if (activeTask === task) {
+			activeTask = null;
+		}
 	}
 }
 
