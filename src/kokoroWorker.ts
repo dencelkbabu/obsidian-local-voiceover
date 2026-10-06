@@ -1,4 +1,4 @@
-import { KokoroTTS } from "kokoro-js";
+import { KokoroTTS, TextSplitterStream } from "kokoro-js";
 import { env } from "@huggingface/transformers";
 
 // Configure ONNX wasm backend for browser Web Worker execution
@@ -48,16 +48,19 @@ async function getOrInitTTS(dtype: "q8" | "fp32"): Promise<KokoroTTS> {
 
 	currentDtype = dtype;
 	initPromise = (async () => {
+		const progress_callback = (progress: unknown) => {
+			post({
+				type: "progress",
+				data: progress,
+			});
+		};
+
 		const tts = await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
 			dtype,
 			device: "wasm",
-			progress_callback: (progress: unknown) => {
-				post({
-					type: "progress",
-					data: progress,
-				});
-			},
+			progress_callback,
 		});
+
 		ttsInstance = tts;
 		return tts;
 	})();
@@ -99,7 +102,11 @@ async function handleMessage(message: WorkerMessage): Promise<void> {
 		try {
 			const tts = await getOrInitTTS(dtype);
 
-			for await (const chunk of tts.stream(text, { voice: voice as never, speed })) {
+			const splitter = new TextSplitterStream();
+			splitter.push(text);
+			splitter.close();
+
+			for await (const chunk of tts.stream(splitter, { voice: voice as never, speed })) {
 				if (activeJobId !== id || activeJobAborted) {
 					break;
 				}

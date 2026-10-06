@@ -411,6 +411,7 @@ export default class LocalVoiceoverPlugin extends Plugin {
 						: stripMarkdownFn(text, rules as unknown as Record<string, boolean>);
 
 				const pendingChunks: Array<{ waveform: Float32Array; source: string }> = [];
+				let totalBufferedDuration = 0;
 				const enqueueChunk = (chunk: { waveform: Float32Array; source: string }) => {
 					if (this.state !== "paused") {
 						this.setState("speaking");
@@ -435,8 +436,9 @@ export default class LocalVoiceoverPlugin extends Plugin {
 					(chunk) => {
 						if (abort.signal.aborted) return;
 						const durationSeconds = chunk.waveform.length / 24000;
-						if (!this.player.isPlaying && pendingChunks.length === 0 && durationSeconds < 1.0) {
+						if (!this.player.isPlaying && totalBufferedDuration < 2.5 && pendingChunks.length < 2) {
 							pendingChunks.push(chunk);
+							totalBufferedDuration += durationSeconds;
 							return;
 						}
 						while (pendingChunks.length > 0) {
