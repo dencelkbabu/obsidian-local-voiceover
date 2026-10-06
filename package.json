@@ -18,7 +18,7 @@
   "dependencies": {
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.38.6",
-    "@huggingface/transformers": "^4.2.0",
+    "@huggingface/transformers": "^3.8.1",
     "ephone": "1.0.2",
     "kokoro-js": "^1.2.1",
     "onnxruntime-web": "^1.27.0"

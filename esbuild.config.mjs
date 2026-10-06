@@ -34,6 +34,7 @@ async function build() {
 		...shared,
 		entryPoints: ["src/worker.ts"],
 		format: "iife",
+		minify: true,
 		external: ["node:*"],
 		write: false,
 	});
@@ -44,6 +45,7 @@ async function build() {
 		...shared,
 		entryPoints: ["src/kokoroWorker.ts"],
 		format: "iife",
+		minify: true,
 		alias: {
 			"fs/promises": "./src/empty.ts",
 			"path": "./src/empty.ts",
@@ -64,6 +66,7 @@ async function build() {
 		entryPoints: ["main.ts"],
 		outfile: "main.js",
 		format: "cjs",
+		minify: production,
 		external,
 	});
 }
